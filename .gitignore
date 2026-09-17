@@ -2,6 +2,8 @@
 .venv/
 __pycache__/
 *.pyc
+*.pid
+*.log
 server.pid
 server.out
 server.err
