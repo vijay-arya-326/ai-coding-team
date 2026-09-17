@@ -65,8 +65,9 @@ Response is an SSE stream of events:
 
 | method   | endpoint               | description                                       |
 | -------- | ---------------------- | ------------------------------------------------- |
-| `GET`    | `/threads`             | list threads (id, message count, timestamps, last message) |
-| `GET`    | `/threads/{thread_id}` | full message history for a thread                 |
+| `GET`    | `/threads`             | list threads (id, title, archived flag, message count, timestamps, last message) |
+| `GET`    | `/threads/{thread_id}` | full message history for a thread (per-message timestamps) |
+| `PATCH`  | `/threads/{thread_id}` | rename (`{"title": ...}`) and/or archive (`{"archived": true\|false}`) a thread |
 | `DELETE` | `/threads/{thread_id}` | delete a thread and all of its checkpoints        |
 
 ### Example

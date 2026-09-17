@@ -10,12 +10,15 @@ export interface UiMessage {
   id: string
   role: 'user' | 'assistant'
   content: string
+  createdAt: string | null
 }
 
 interface ChatViewProps {
   messages: UiMessage[]
   streaming: boolean
   stream: string
+  streamStartedAt: number | null
+  streamElapsedMs: number
   toolActivity: ToolActivity[]
   error: string | null
   input: string
@@ -27,6 +30,8 @@ export default function ChatView({
   messages,
   streaming,
   stream,
+  streamStartedAt,
+  streamElapsedMs,
   toolActivity,
   error,
   input,
@@ -37,7 +42,7 @@ export default function ChatView({
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
-  }, [messages.length, stream, toolActivity.length])
+  }, [messages.length, stream, streamElapsedMs, toolActivity.length, streaming])
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -62,9 +67,22 @@ export default function ChatView({
         ) : (
           <>
             {messages.map((msg) => (
-              <MessageBubble key={msg.id} role={msg.role} content={msg.content} />
+              <MessageBubble
+                key={msg.id}
+                role={msg.role}
+                content={msg.content}
+                createdAt={msg.createdAt}
+              />
             ))}
-            {streaming && <MessageBubble role="assistant" content={stream} streaming />}
+            {streaming && (
+              <MessageBubble
+                role="assistant"
+                content={stream}
+                streaming
+                streamStartedAt={streamStartedAt}
+                streamElapsedMs={streamElapsedMs}
+              />
+            )}
             {error && (
               <div className="self-center rounded-lg border border-red-200 bg-red-50 px-3.5 py-2.5 text-sm text-red-600">
                 {error}

@@ -1,4 +1,4 @@
-import type { StreamEvent, ThreadDetail, ThreadSummary } from './types'
+import type { StreamEvent, ThreadDetail, ThreadSummary, ThreadUpdate } from './types'
 
 const BASE = '/api'
 
@@ -28,6 +28,33 @@ export function fetchThread(threadId: string): Promise<ThreadDetail> {
 export function deleteThread(threadId: string): Promise<void> {
   return jsonFetch<void>(`${BASE}/threads/${encodeURIComponent(threadId)}`, {
     method: 'DELETE',
+  })
+}
+
+export function updateThread(
+  threadId: string,
+  update: ThreadUpdate,
+): Promise<ThreadSummary> {
+  return jsonFetch<ThreadSummary>(`${BASE}/threads/${encodeURIComponent(threadId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(update),
+  })
+}
+
+export function formatTimestamp(iso: string | null): string {
+  if (!iso) return ''
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return ''
+  const sameDay = date.toDateString() === new Date().toDateString()
+  if (sameDay) {
+    return date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+  }
+  return date.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
   })
 }
 

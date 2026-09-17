@@ -120,6 +120,9 @@ async def close_checkpointer() -> None:
     if hasattr(get_checkpointer, "_saver"):
         await get_checkpointer._saver.conn.close()
         del get_checkpointer._saver
+    if hasattr(_meta_conn, "_conn"):
+        await _meta_conn._conn.close()
+        del _meta_conn._conn
 
 
 async def get_graph():
@@ -128,6 +131,118 @@ async def get_graph():
         checkpointer = await get_checkpointer()
         get_graph._graph = _build_graph(checkpointer)
     return get_graph._graph
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+async def _meta_conn() -> aiosqlite.Connection:
+    """Return a long-lived connection to the app's thread metadata tables."""
+    if not hasattr(_meta_conn, "_conn"):
+        os.makedirs(os.path.dirname(THREADS_DB_PATH), exist_ok=True)
+        conn = await aiosqlite.connect(THREADS_DB_PATH)
+        await conn.execute(
+            "CREATE TABLE IF NOT EXISTS thread_meta ("
+            " thread_id TEXT PRIMARY KEY,"
+            " title TEXT,"
+            " archived INTEGER NOT NULL DEFAULT 0,"
+            " created_at TEXT NOT NULL,"
+            " updated_at TEXT NOT NULL)"
+        )
+        await conn.execute(
+            "CREATE TABLE IF NOT EXISTS thread_messages ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " thread_id TEXT NOT NULL,"
+            " role TEXT NOT NULL,"
+            " content TEXT NOT NULL,"
+            " created_at TEXT NOT NULL)"
+        )
+        await conn.commit()
+        logger.info("Thread metadata tables ready at %s", THREADS_DB_PATH)
+        _meta_conn._conn = conn
+    return _meta_conn._conn
+
+
+async def ensure_thread_meta(thread_id: str, first_user_text: str | None) -> None:
+    """Create a metadata row when a thread first appears; title defaults to first message."""
+    conn = await _meta_conn()
+    now = _now()
+    title = first_user_text.strip()[:80] if first_user_text and first_user_text.strip() else None
+    await conn.execute(
+        "INSERT OR IGNORE INTO thread_meta"
+        " (thread_id, title, archived, created_at, updated_at) VALUES (?, ?, 0, ?, ?)",
+        (thread_id, title, now, now),
+    )
+    await conn.commit()
+
+
+async def record_message(thread_id: str, role: str, content: str, created_at: str) -> None:
+    """Persist one user/assistant message with its timestamp for display."""
+    if not content:
+        return
+    conn = await _meta_conn()
+    await conn.execute(
+        "INSERT INTO thread_messages (thread_id, role, content, created_at) VALUES (?, ?, ?, ?)",
+        (thread_id, role, content, created_at),
+    )
+    await conn.commit()
+
+
+async def _load_thread_meta(thread_id: str) -> tuple[str | None, bool]:
+    conn = await _meta_conn()
+    cur = await conn.execute(
+        "SELECT title, archived FROM thread_meta WHERE thread_id = ?", (thread_id,)
+    )
+    row = await cur.fetchone()
+    if row is None:
+        return None, False
+    return row[0], bool(row[1])
+
+
+async def update_thread_meta(
+    thread_id: str,
+    title: str | None = None,
+    archived: bool | None = None,
+) -> dict[str, Any] | None:
+    """Rename and/or (un)archive a thread; returns the new metadata state."""
+    conn = await _meta_conn()
+    now = _now()
+    await conn.execute(
+        "INSERT OR IGNORE INTO thread_meta"
+        " (thread_id, title, archived, created_at, updated_at) VALUES (?, NULL, 0, ?, ?)",
+        (thread_id, now, now),
+    )
+    if title is not None:
+        title = title.strip() or None
+        await conn.execute(
+            "UPDATE thread_meta SET title = ?, updated_at = ? WHERE thread_id = ?",
+            (title, now, thread_id),
+        )
+    if archived is not None:
+        await conn.execute(
+            "UPDATE thread_meta SET archived = ?, updated_at = ? WHERE thread_id = ?",
+            (int(archived), now, thread_id),
+        )
+    await conn.commit()
+    title, archived = await _load_thread_meta(thread_id)
+    return {"thread_id": thread_id, "title": title, "archived": archived}
+
+
+async def _stored_messages(thread_id: str) -> list[dict[str, Any]] | None:
+    conn = await _meta_conn()
+    cur = await conn.execute(
+        "SELECT role, content, created_at FROM thread_messages"
+        " WHERE thread_id = ? ORDER BY id",
+        (thread_id,),
+    )
+    rows = await cur.fetchall()
+    if not rows:
+        return None
+    return [
+        {"role": role, "content": content, "created_at": created_at}
+        for role, content, created_at in rows
+    ]
 
 
 def _role_of(message: BaseMessage) -> str:
@@ -171,7 +286,7 @@ async def _thread_created_at(saver: AsyncSqliteSaver, thread_id: str) -> str | N
 
 
 async def list_threads(limit: int = 100) -> list[dict[str, Any]]:
-    """List threads, newest first, with a preview of the last message."""
+    """List threads, newest first, with title, archived flag, and last-message preview."""
     saver = await get_checkpointer()
     threads: dict[str, dict[str, Any]] = {}
     async for tup in saver.alist(None, limit=limit):
@@ -180,34 +295,51 @@ async def list_threads(limit: int = 100) -> list[dict[str, Any]]:
             continue
         messages = (tup.checkpoint or {}).get("channel_values", {}).get("messages", [])
         messages = [m for m in messages if isinstance(m, BaseMessage)]
+        first_user = next((m for m in messages if isinstance(m, HumanMessage)), None)
+        title, archived = await _load_thread_meta(thread_id)
         threads[thread_id] = {
             "thread_id": thread_id,
+            "title": title,
+            "archived": archived,
             "message_count": len(messages),
             "created_at": await _thread_created_at(saver, thread_id),
             "updated_at": _checkpoint_ts(
                 (tup.config or {}).get("configurable", {}).get("checkpoint_id")
             ),
             "last_message": _message_to_dict(messages[-1]) if messages else None,
+            "first_user_message": (
+                str(first_user.content)[:80] if first_user and first_user.content else None
+            ),
         }
     return list(threads.values())
 
 
 async def get_thread(thread_id: str) -> dict[str, Any] | None:
-    """Return one thread's message history, or None if it does not exist."""
+    """Return one thread's message history (with timestamps), or None if missing."""
     saver = await get_checkpointer()
     tup = await saver.aget_tuple(
         {"configurable": {"thread_id": thread_id}}
     )
     if tup is None:
         return None
-    messages = (tup.checkpoint or {}).get("channel_values", {}).get("messages", [])
+    title, archived = await _load_thread_meta(thread_id)
+    messages = await _stored_messages(thread_id)
+    if messages is None:
+        raw = (tup.checkpoint or {}).get("channel_values", {}).get("messages", [])
+        messages = [
+            {**_message_to_dict(m), "created_at": None}
+            for m in raw
+            if isinstance(m, BaseMessage)
+        ]
     return {
         "thread_id": thread_id,
+        "title": title,
+        "archived": archived,
         "created_at": await _thread_created_at(saver, thread_id),
         "updated_at": _checkpoint_ts(
             (tup.config or {}).get("configurable", {}).get("checkpoint_id")
         ),
-        "messages": [_message_to_dict(m) for m in messages if isinstance(m, BaseMessage)],
+        "messages": messages,
     }
 
 

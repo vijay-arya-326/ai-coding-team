@@ -4,10 +4,13 @@ React + TypeScript (Vite) chat UI for the LangGraph agent backend in `backend/`.
 
 ## Features
 
-- Token-level streaming responses (SSE) rendered as they arrive
+- Token-level streaming responses (SSE) rendered as they arrive, with a live
+  "started at … · streaming …s" elapsed counter
 - Thread sidebar backed by the backend's SQLite thread store
-  (`GET/POST /chat`, `GET /threads`, `DELETE /threads/{id}`)
+  (`GET/POST /chat`, `GET /threads`, `PATCH /threads/{id}`, `DELETE /threads/{id}`)
 - Create new conversations, switch threads, delete threads
+- Rename conversations (custom modal) and archive/unarchive them (Active/Archived view)
+- Message bubbles with user/agent icons and AM/PM timestamps
 - Tool-call activity shown as chips inline with the response
 - Vite dev proxy forwards `/api/*` to the FastAPI backend on `:8000`
 
