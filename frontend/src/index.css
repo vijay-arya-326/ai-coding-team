@@ -104,6 +104,18 @@ body {
   text-underline-offset: 2px;
 }
 
+.markdown strong {
+  font-weight: 700;
+}
+
+.markdown em {
+  font-style: italic;
+}
+
+.markdown del {
+  text-decoration: line-through;
+}
+
 .markdown h1,
 .markdown h2,
 .markdown h3,

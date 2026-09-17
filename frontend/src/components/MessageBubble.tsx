@@ -49,6 +49,18 @@ function AssistantIcon({ className = '' }: { className?: string }) {
   )
 }
 
+function stripAssistantFence(content: string): string {
+  const lines = content.split(/\r?\n/)
+  if (lines.length === 0 || !lines[0].trim().startsWith('```')) {
+    return content
+  }
+  const rest = lines.slice(1)
+  if (rest.length > 0 && rest[rest.length - 1].trim().startsWith('```')) {
+    rest.pop()
+  }
+  return rest.join('\n').trim()
+}
+
 export default function MessageBubble({
   role,
   content,
@@ -59,6 +71,7 @@ export default function MessageBubble({
   streamElapsedMs = 0,
 }: MessageBubbleProps) {
   const assistant = role === 'assistant'
+  const rendered = assistant ? stripAssistantFence(content) : content
   const streamMeta =
     streaming && streamStartedAt
       ? `Started ${formatTimestamp(new Date(streamStartedAt).toISOString())} · streaming ${(
@@ -98,7 +111,7 @@ export default function MessageBubble({
         </div>
         <div className="markdown break-words text-slate-800">
           <ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml>
-            {content}
+            {rendered}
           </ReactMarkdown>
         </div>
         {streamMeta && (
