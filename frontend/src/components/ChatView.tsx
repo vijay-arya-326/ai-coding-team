@@ -42,15 +42,30 @@ export default function ChatView({
   onStop,
 }: ChatViewProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const atBottomRef = useRef(true)
+
+  const handleScroll = () => {
+    const el = scrollRef.current
+    if (!el) return
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight
+    atBottomRef.current = distance < 80
+  }
 
   useEffect(() => {
+    if (!atBottomRef.current) return
     bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
   }, [messages.length, stream, streamElapsedMs, toolActivity.length, streaming])
+
+  const send = () => {
+    atBottomRef.current = true
+    onSend()
+  }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      if (input.trim() && !streaming) onSend()
+      if (input.trim() && !streaming) send()
     }
   }
 
@@ -58,7 +73,7 @@ export default function ChatView({
 
   return (
     <section className="flex h-full min-w-0 flex-1 flex-col bg-slate-100">
-      <div className="mx-auto flex w-full max-w-3xl flex-1 min-h-0 flex-col gap-4 overflow-y-auto px-6 py-6">
+      <div ref={scrollRef} onScroll={handleScroll} className="mx-auto flex w-full max-w-3xl flex-1 min-h-0 flex-col gap-4 overflow-y-auto px-6 py-6">
         {isEmpty ? (
           <div className="m-auto max-w-[480px] text-center text-slate-500">
             <h2 className="mb-2 text-xl font-semibold text-slate-800">Chat with your agent</h2>
@@ -117,7 +132,7 @@ export default function ChatView({
         className="mx-auto flex w-full max-w-3xl gap-2.5 px-6 pb-6"
         onSubmit={(e) => {
           e.preventDefault()
-          if (input.trim() && !streaming) onSend()
+          if (input.trim() && !streaming) send()
         }}
       >
         <textarea
