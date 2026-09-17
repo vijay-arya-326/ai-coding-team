@@ -61,6 +61,12 @@ function stripAssistantFence(content: string): string {
   return rest.join('\n').trim()
 }
 
+function formatDuration(elapsedMs: number): string {
+  const totalSec = Math.max(0, Math.round(elapsedMs / 1000))
+  if (totalSec < 60) return `${totalSec} sec`
+  return `${Math.floor(totalSec / 60)}m ${totalSec % 60} sec`
+}
+
 export default function MessageBubble({
   role,
   content,
@@ -78,7 +84,7 @@ export default function MessageBubble({
           streamElapsedMs / 1000
         ).toFixed(1)}s`
       : null
-  const duration = meta ? `${(meta.elapsedMs / 1000).toFixed(1)}s` : null
+  const duration = meta ? `[${formatDuration(meta.elapsedMs)}]` : null
 
   return (
     <div
@@ -102,18 +108,18 @@ export default function MessageBubble({
           <span className="text-[11px] font-semibold tracking-wider text-slate-400 uppercase">
             {assistant ? 'Agent' : 'You'}
           </span>
-          {createdAt && (
-            <span className="text-[11px] text-slate-400">{formatTimestamp(createdAt)}</span>
-          )}
-          {duration && (
-            <span className="text-[11px] text-slate-400">· {duration}</span>
-          )}
         </div>
         <div className="markdown break-words text-slate-800">
           <ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml>
             {rendered}
           </ReactMarkdown>
         </div>
+        {(createdAt || duration) && (
+          <div className="mt-1 text-right text-[11px] text-slate-400">
+            {createdAt && <span>{formatTimestamp(createdAt)}</span>}
+            {duration && <span> {duration}</span>}
+          </div>
+        )}
         {streamMeta && (
           <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-indigo-600">
             <span className="h-2 w-2 animate-blink rounded-full bg-indigo-500" />

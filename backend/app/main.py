@@ -101,6 +101,7 @@ async def _event_generator(req: ChatRequest, config: RunnableConfig, stop_event:
     try:
         await ensure_thread_meta(thread_id, req.message)
         await record_message(thread_id, "user", req.message, _now())
+        stream_started_at = _now()
         yield {"event": "start", "data": json.dumps({"thread_id": thread_id})}
 
         graph = await get_graph()
@@ -142,7 +143,14 @@ async def _event_generator(req: ChatRequest, config: RunnableConfig, stop_event:
                 }
 
         if assistant_parts:
-            await record_message(thread_id, "assistant", "".join(assistant_parts), _now())
+            await record_message(
+                thread_id,
+                "assistant",
+                "".join(assistant_parts),
+                _now(),
+                stream_started_at=stream_started_at,
+                stream_elapsed_ms=max(0, round((time.time() - started) * 1000)),
+            )
 
         if stopped:
             logger.info(

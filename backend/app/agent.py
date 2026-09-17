@@ -156,8 +156,20 @@ async def _meta_conn() -> aiosqlite.Connection:
             " thread_id TEXT NOT NULL,"
             " role TEXT NOT NULL,"
             " content TEXT NOT NULL,"
-            " created_at TEXT NOT NULL)"
+            " created_at TEXT NOT NULL,"
+            " stream_started_at TEXT,"
+            " stream_elapsed_ms INTEGER)"
         )
+        cur = await conn.execute("PRAGMA table_info(thread_messages)")
+        existing = {row[1] for row in await cur.fetchall()}
+        if "stream_started_at" not in existing:
+            await conn.execute(
+                "ALTER TABLE thread_messages ADD COLUMN stream_started_at TEXT"
+            )
+        if "stream_elapsed_ms" not in existing:
+            await conn.execute(
+                "ALTER TABLE thread_messages ADD COLUMN stream_elapsed_ms INTEGER"
+            )
         await conn.commit()
         logger.info("Thread metadata tables ready at %s", THREADS_DB_PATH)
         _meta_conn._conn = conn
@@ -177,14 +189,27 @@ async def ensure_thread_meta(thread_id: str, first_user_text: str | None) -> Non
     await conn.commit()
 
 
-async def record_message(thread_id: str, role: str, content: str, created_at: str) -> None:
-    """Persist one user/assistant message with its timestamp for display."""
+async def record_message(
+    thread_id: str,
+    role: str,
+    content: str,
+    created_at: str,
+    stream_started_at: str | None = None,
+    stream_elapsed_ms: int | None = None,
+) -> None:
+    """Persist one user/assistant message with its timestamp for display.
+
+    Assistant messages also record the stream's start time and duration (ms) so
+    the timing survives a page reload.
+    """
     if not content:
         return
     conn = await _meta_conn()
     await conn.execute(
-        "INSERT INTO thread_messages (thread_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-        (thread_id, role, content, created_at),
+        "INSERT INTO thread_messages"
+        " (thread_id, role, content, created_at, stream_started_at, stream_elapsed_ms)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        (thread_id, role, content, created_at, stream_started_at, stream_elapsed_ms),
     )
     await conn.commit()
 
@@ -232,16 +257,22 @@ async def update_thread_meta(
 async def _stored_messages(thread_id: str) -> list[dict[str, Any]] | None:
     conn = await _meta_conn()
     cur = await conn.execute(
-        "SELECT role, content, created_at FROM thread_messages"
-        " WHERE thread_id = ? ORDER BY id",
+        "SELECT role, content, created_at, stream_started_at, stream_elapsed_ms"
+        " FROM thread_messages WHERE thread_id = ? ORDER BY id",
         (thread_id,),
     )
     rows = await cur.fetchall()
     if not rows:
         return None
     return [
-        {"role": role, "content": content, "created_at": created_at}
-        for role, content, created_at in rows
+        {
+            "role": role,
+            "content": content,
+            "created_at": created_at,
+            "stream_started_at": stream_started_at,
+            "stream_elapsed_ms": stream_elapsed_ms,
+        }
+        for role, content, created_at, stream_started_at, stream_elapsed_ms in rows
     ]
 
 

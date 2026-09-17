@@ -2,6 +2,8 @@ export interface MessageDto {
   role: 'user' | 'assistant' | 'tool'
   content: string
   created_at: string | null
+  stream_started_at?: string | null
+  stream_elapsed_ms?: number | null
 }
 
 export interface ThreadSummary {

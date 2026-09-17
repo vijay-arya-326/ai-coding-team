@@ -103,6 +103,13 @@ export default function App() {
             role: m.role,
             content: m.content,
             createdAt: m.created_at,
+            meta:
+              m.stream_elapsed_ms != null && m.stream_started_at
+                ? {
+                    startedAt: new Date(m.stream_started_at).getTime(),
+                    elapsedMs: m.stream_elapsed_ms,
+                  }
+                : null,
           })),
       )
     } catch (err) {
