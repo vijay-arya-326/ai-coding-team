@@ -4,6 +4,7 @@ Conversation state is persisted per thread in SQLite (see app/agent.py), so a
 client only sends a new message plus an optional thread_id to continue a thread.
 """
 
+import asyncio
 import json
 import os
 import time
@@ -83,11 +84,19 @@ class ThreadUpdateRequest(BaseModel):
     archived: bool | None = None
 
 
-async def _event_generator(req: ChatRequest, config: RunnableConfig):
+_active_runs: dict[str, asyncio.Event] = {}
+
+
+def _stop_event(thread_id: str) -> asyncio.Event:
+    return _active_runs.setdefault(thread_id, asyncio.Event())
+
+
+async def _event_generator(req: ChatRequest, config: RunnableConfig, stop_event: asyncio.Event):
     thread_id = config["configurable"]["thread_id"]
     started = time.time()
     tokens = 0
     assistant_parts: list[str] = []
+    stopped = False
     logger.info("chat start thread=%s message=%r", thread_id, req.message[:200])
     try:
         await ensure_thread_meta(thread_id, req.message)
@@ -100,6 +109,10 @@ async def _event_generator(req: ChatRequest, config: RunnableConfig):
             config=config,
             version="v2",
         ):
+            if stop_event.is_set():
+                stopped = True
+                logger.info("chat stop requested thread=%s", thread_id)
+                break
             kind = event["event"]
             if kind == "on_chat_model_stream":
                 chunk = event["data"].get("chunk")
@@ -128,18 +141,29 @@ async def _event_generator(req: ChatRequest, config: RunnableConfig):
                     }),
                 }
 
-        logger.info(
-            "chat end thread=%s tokens=%d elapsed=%.2fs",
-            thread_id,
-            tokens,
-            time.time() - started,
-        )
         if assistant_parts:
             await record_message(thread_id, "assistant", "".join(assistant_parts), _now())
-        yield {"event": "end", "data": json.dumps({"status": "ok"})}
+
+        if stopped:
+            logger.info(
+                "chat stopped thread=%s tokens=%d elapsed=%.2fs",
+                thread_id,
+                tokens,
+                time.time() - started,
+            )
+        else:
+            logger.info(
+                "chat end thread=%s tokens=%d elapsed=%.2fs",
+                thread_id,
+                tokens,
+                time.time() - started,
+            )
+            yield {"event": "end", "data": json.dumps({"status": "ok"})}
     except Exception as exc:
         logger.exception("chat error thread=%s", thread_id)
         yield {"event": "error", "data": json.dumps({"detail": str(exc)})}
+    finally:
+        _active_runs.pop(thread_id, None)
 
 
 @app.get("/health")
@@ -154,10 +178,21 @@ async def chat(req: ChatRequest) -> EventSourceResponse:
         recursion_limit=25,
         configurable={"thread_id": thread_id},
     )
+    stop_event = _stop_event(thread_id)
     return EventSourceResponse(
-        _event_generator(req, config),
+        _event_generator(req, config, stop_event),
         headers={"Cache-Control": "no-cache"},
     )
+
+
+@app.post("/threads/{thread_id}/stop")
+async def thread_stop(thread_id: str) -> dict[str, str]:
+    if thread_id not in _active_runs:
+        logger.info("chat stop idle thread=%s", thread_id)
+        return {"status": "idle"}
+    _active_runs[thread_id].set()
+    logger.info("chat stop requested thread=%s", thread_id)
+    return {"status": "stopped"}
 
 
 @app.get("/threads")

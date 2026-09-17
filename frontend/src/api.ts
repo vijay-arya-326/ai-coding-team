@@ -42,6 +42,13 @@ export function updateThread(
   })
 }
 
+export function stopChat(threadId: string): Promise<{ status: string }> {
+  return jsonFetch<{ status: string }>(
+    `${BASE}/threads/${encodeURIComponent(threadId)}/stop`,
+    { method: 'POST' },
+  )
+}
+
 export function formatTimestamp(iso: string | null): string {
   if (!iso) return ''
   const date = new Date(iso)

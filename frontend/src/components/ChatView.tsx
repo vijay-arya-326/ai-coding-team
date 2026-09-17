@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import MessageBubble from './MessageBubble'
+import MessageBubble, { type BubbleMeta } from './MessageBubble'
 
 export interface ToolActivity {
   name: string
@@ -11,6 +11,7 @@ export interface UiMessage {
   role: 'user' | 'assistant'
   content: string
   createdAt: string | null
+  meta?: BubbleMeta | null
 }
 
 interface ChatViewProps {
@@ -24,6 +25,7 @@ interface ChatViewProps {
   input: string
   onInputChange: (value: string) => void
   onSend: () => void
+  onStop: () => void
 }
 
 export default function ChatView({
@@ -37,6 +39,7 @@ export default function ChatView({
   input,
   onInputChange,
   onSend,
+  onStop,
 }: ChatViewProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
 
@@ -72,6 +75,7 @@ export default function ChatView({
                 role={msg.role}
                 content={msg.content}
                 createdAt={msg.createdAt}
+                meta={msg.meta}
               />
             ))}
             {streaming && (
@@ -124,13 +128,26 @@ export default function ChatView({
           rows={2}
           className="flex-1 resize-none rounded-xl border border-slate-200 bg-white px-3.5 py-3 text-[15px] text-slate-800 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/15"
         />
-        <button
-          type="submit"
-          disabled={streaming || !input.trim()}
-          className="self-end cursor-pointer rounded-xl bg-indigo-500 px-5 py-3 text-[15px] font-semibold text-white transition-colors hover:bg-indigo-600 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          {streaming ? 'Streaming…' : 'Send'}
-        </button>
+        {streaming ? (
+          <button
+            type="button"
+            onClick={onStop}
+            className="flex cursor-pointer items-center gap-1.5 self-end rounded-xl bg-red-500 px-5 py-3 text-[15px] font-semibold text-white transition-colors hover:bg-red-600"
+          >
+            <span className="text-xs" aria-hidden="true">
+              ■
+            </span>
+            Stop
+          </button>
+        ) : (
+          <button
+            type="submit"
+            disabled={!input.trim()}
+            className="self-end cursor-pointer rounded-xl bg-indigo-500 px-5 py-3 text-[15px] font-semibold text-white transition-colors hover:bg-indigo-600 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            Send
+          </button>
+        )}
       </form>
     </section>
   )

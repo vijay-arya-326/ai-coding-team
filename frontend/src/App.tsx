@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { deleteThread, fetchThread, fetchThreads, streamChat, updateThread } from './api'
+import { deleteThread, fetchThread, fetchThreads, stopChat, streamChat, updateThread } from './api'
 import ChatView, { type ToolActivity, type UiMessage } from './components/ChatView'
 import ConfirmDialog from './components/ConfirmDialog'
 import RenameDialog from './components/RenameDialog'
@@ -25,6 +25,14 @@ export default function App() {
 
   const abortRef = useRef<AbortController | null>(null)
   const toastIdRef = useRef(0)
+  const stoppedRef = useRef(false)
+  const streamThreadIdRef = useRef<string | null>(null)
+
+  const handleStop = useCallback(() => {
+    stoppedRef.current = true
+    if (streamThreadIdRef.current) void stopChat(streamThreadIdRef.current)
+    abortRef.current?.abort()
+  }, [])
 
   const notify = useCallback((message: string, kind: ToastItem['kind'] = 'success') => {
     const id = ++toastIdRef.current
@@ -184,6 +192,9 @@ export default function App() {
     abortRef.current = controller
     let currentId = activeId
     let acc = ''
+    let startedAt = 0
+    stoppedRef.current = false
+    streamThreadIdRef.current = null
 
     try {
       for await (const evt of streamChat(text, currentId ?? undefined, controller.signal)) {
@@ -193,7 +204,9 @@ export default function App() {
               currentId = evt.thread_id
               setActiveId(evt.thread_id)
             }
-            setStreamStartedAt(Date.now())
+            streamThreadIdRef.current = currentId
+            startedAt = Date.now()
+            setStreamStartedAt(startedAt)
             break
           case 'token':
             acc += evt.delta
@@ -218,6 +231,7 @@ export default function App() {
         }
       }
 
+      const elapsedMs = startedAt ? Date.now() - startedAt : 0
       setMessages((prev) => [
         ...prev,
         {
@@ -225,18 +239,33 @@ export default function App() {
           role: 'assistant',
           content: acc || '…',
           createdAt: new Date().toISOString(),
+          meta: { startedAt, elapsedMs },
         },
       ])
     } catch (err) {
       if (!controller.signal.aborted) {
         setError(err instanceof Error ? err.message : 'Chat failed')
+      } else if (stoppedRef.current) {
+        const elapsedMs = startedAt ? Date.now() - startedAt : 0
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `a-${Date.now()}`,
+            role: 'assistant',
+            content: acc || '…',
+            createdAt: new Date().toISOString(),
+            meta: { startedAt, elapsedMs },
+          },
+        ])
+        setError(null)
       }
     } finally {
       setStreaming(false)
       setStreamText('')
       setToolActivity([])
       setStreamStartedAt(null)
-    setStreamElapsedMs(0)
+      setStreamElapsedMs(0)
+      streamThreadIdRef.current = null
       abortRef.current = null
       void refreshThreads()
     }
@@ -268,6 +297,7 @@ export default function App() {
         input={input}
         onInputChange={setInput}
         onSend={() => void handleSend()}
+        onStop={handleStop}
       />
       <ConfirmDialog
         open={pendingDelete !== null}

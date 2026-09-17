@@ -1,9 +1,17 @@
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { formatTimestamp } from '../api'
+
+export interface BubbleMeta {
+  startedAt: number
+  elapsedMs: number
+}
 
 interface MessageBubbleProps {
   role: 'user' | 'assistant'
   content: string
   createdAt?: string | null
+  meta?: BubbleMeta | null
   streaming?: boolean
   streamStartedAt?: number | null
   streamElapsedMs?: number
@@ -45,6 +53,7 @@ export default function MessageBubble({
   role,
   content,
   createdAt,
+  meta,
   streaming,
   streamStartedAt,
   streamElapsedMs = 0,
@@ -56,6 +65,7 @@ export default function MessageBubble({
           streamElapsedMs / 1000
         ).toFixed(1)}s`
       : null
+  const duration = meta ? `${(meta.elapsedMs / 1000).toFixed(1)}s` : null
 
   return (
     <div
@@ -82,8 +92,15 @@ export default function MessageBubble({
           {createdAt && (
             <span className="text-[11px] text-slate-400">{formatTimestamp(createdAt)}</span>
           )}
+          {duration && (
+            <span className="text-[11px] text-slate-400">· {duration}</span>
+          )}
         </div>
-        <div className="whitespace-pre-wrap break-words text-slate-800">{content}</div>
+        <div className="markdown break-words text-slate-800">
+          <ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml>
+            {content}
+          </ReactMarkdown>
+        </div>
         {streamMeta && (
           <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-indigo-600">
             <span className="h-2 w-2 animate-blink rounded-full bg-indigo-500" />
