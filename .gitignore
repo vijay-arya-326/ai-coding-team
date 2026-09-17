@@ -1,4 +1,10 @@
-.idea
-.venv
-.json
-.env
+.idea/
+.venv/
+__pycache__/
+*.pyc
+server.pid
+server.out
+server.err
+agent_state.db
+db/
+logs/
