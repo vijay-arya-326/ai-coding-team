@@ -1,5 +1,9 @@
-import { useCallback, useEffect, useState } from 'react'
-import { fetchRunsSummary, fetchThreadRuns, formatTimestamp } from '../api'
+import { useEffect, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import rehypeRaw from 'rehype-raw'
+import rehypeSanitize from 'rehype-sanitize'
+import { fetchThreadRuns, formatTimestamp } from '../api'
 import type { RunRound, RunSummary, ThreadRuns } from '../types'
 
 function formatDurationMs(ms: number | null): string {
@@ -36,22 +40,37 @@ function PreviewCell({
   )
 }
 
-export default function RunsView() {
-  const [summaries, setSummaries] = useState<RunSummary[]>([])
-  const [selectedId, setSelectedId] = useState<string | null>(null)
+export default function RunsView({
+  summaries,
+  selectedId,
+}: {
+  summaries: RunSummary[]
+  selectedId: string | null
+}) {
   const [detail, setDetail] = useState<ThreadRuns | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [openRounds, setOpenRounds] = useState<Set<number>>(new Set())
   const [popup, setPopup] = useState<{ title: string; text: string } | null>(null)
+  const [popupTab, setPopupTab] = useState<'raw' | 'parsed'>('raw')
+
+  const openPopup = (title: string, text: string) => {
+    setPopupTab('raw')
+    setPopup({ title, text })
+  }
 
   useEffect(() => {
+    setDetail(null)
+    setError(null)
+    if (!selectedId) {
+      setLoading(false)
+      return
+    }
     let cancelled = false
-    fetchRunsSummary()
+    setLoading(true)
+    fetchThreadRuns(selectedId)
       .then((data) => {
-        if (cancelled) return
-        setSummaries(data)
-        setSelectedId((prev) => prev ?? data[0]?.thread_id ?? null)
+        if (!cancelled) setDetail(data)
       })
       .catch((err) => {
         if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load runs')
@@ -62,22 +81,7 @@ export default function RunsView() {
     return () => {
       cancelled = true
     }
-  }, [])
-
-  const loadDetail = useCallback(async (threadId: string) => {
-    setSelectedId(threadId)
-    setDetail(null)
-    setError(null)
-    try {
-      setDetail(await fetchThreadRuns(threadId))
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load runs')
-    }
-  }, [])
-
-  useEffect(() => {
-    if (selectedId) void loadDetail(selectedId)
-  }, [selectedId, loadDetail])
+  }, [selectedId])
 
   const toggleRound = (runIndex: number) => {
     setOpenRounds((prev) => {
@@ -124,55 +128,15 @@ export default function RunsView() {
       </header>
 
       <div className="flex-1 overflow-y-auto px-6 py-5">
-        {loading && <p className="text-sm text-slate-500">Loading runs…</p>}
-        {!loading && error && <p className="text-sm text-red-600">{error}</p>}
-
-        {!loading && summaries.length === 0 && (
+        {selectedId && loading && <p className="text-sm text-slate-500">Loading trace…</p>}
+        {selectedId && !loading && error && <p className="text-sm text-red-600">{error}</p>}
+        {!selectedId && summaries.length === 0 && (
           <p className="text-sm text-slate-500">
             No runs yet. Send a message in chat to start tracing token usage.
           </p>
         )}
 
-        {summaries.length > 0 && (
-          <>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
-              {summaries.map((s) => (
-                <button
-                  key={s.thread_id}
-                  onClick={() => void loadDetail(s.thread_id)}
-                  className={`cursor-pointer rounded-xl border bg-white p-4 text-left transition-shadow ${
-                    selectedId === s.thread_id
-                      ? 'border-indigo-300 shadow-md shadow-indigo-100'
-                      : 'border-slate-200 hover:border-indigo-200 hover:shadow-md'
-                  }`}
-                >
-                  <div className="truncate text-[13.5px] font-semibold text-slate-900">
-                    {s.title ?? 'Untitled conversation'}
-                  </div>
-                  <div className="mt-1 text-[11.5px] text-slate-500">
-                    {s.run_count} model round{s.run_count === 1 ? '' : 's'} ·{' '}
-                    {formatTimestamp(s.last_run_at) || 'recently'}
-                  </div>
-                  <div className="mt-2.5 flex items-baseline justify-between">
-                    <span className="text-[15px] font-bold text-indigo-800">
-                      {formatTokens(s.total_tokens)}{' '}
-                      <span className="text-[11px] font-normal text-slate-400">tokens</span>
-                    </span>
-                    {s.tool_count > 0 && (
-                      <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[11px] text-indigo-700">
-                        {s.tool_count} tool{s.tool_count === 1 ? '' : 's'}
-                      </span>
-                    )}
-                  </div>
-                  <div className="mt-1.5 flex gap-3 text-[11px] text-slate-500">
-                    <span>⇣ {formatTokens(s.total_input_tokens)}</span>
-                    <span>⇡ {formatTokens(s.total_output_tokens)}</span>
-                  </div>
-                </button>
-              ))}
-            </div>
-
-            {detail && (
+            {selectedId && !loading && !error && detail && (
               <div className="mt-5 overflow-hidden rounded-xl border border-slate-200 bg-white">
                 <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
                   <div className="text-[13px] font-semibold text-slate-800">
@@ -211,15 +175,13 @@ export default function RunsView() {
                         round={r}
                         open={openRounds.has(r.run_index)}
                         onToggle={() => toggleRound(r.run_index)}
-                        onOpen={(title, text) => setPopup({ title, text })}
+                        onOpen={(title, text) => openPopup(title, text)}
                       />
                     ))}
                   </tbody>
                 </table>
               </div>
             )}
-          </>
-        )}
       </div>
 
       {popup && (
@@ -228,7 +190,7 @@ export default function RunsView() {
           onClick={() => setPopup(null)}
         >
           <div
-            className="w-full max-w-2xl overflow-hidden rounded-xl bg-white shadow-2xl"
+            className="w-full max-w-3xl overflow-hidden rounded-xl bg-white shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
@@ -244,10 +206,37 @@ export default function RunsView() {
                 ✕
               </button>
             </div>
+            <div className="flex gap-1 border-b border-slate-100 px-4 pt-2.5">
+              {(['raw', 'parsed'] as const).map((tab) => (
+                <button
+                  key={tab}
+                  type="button"
+                  onClick={() => setPopupTab(tab)}
+                  className={`cursor-pointer rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
+                    popupTab === tab
+                      ? 'bg-indigo-50 text-indigo-700'
+                      : 'text-slate-400 hover:text-slate-600'
+                  }`}
+                >
+                  {tab === 'raw' ? 'Raw Output' : 'Parsed Output'}
+                </button>
+              ))}
+            </div>
             <div className="max-h-[60vh] overflow-y-auto p-4">
-              <pre className="break-words whitespace-pre-wrap font-mono text-[12.5px] leading-relaxed text-slate-700">
-                {popup.text}
-              </pre>
+              {popupTab === 'parsed' ? (
+                <div className="markdown text-[13.5px] text-slate-800">
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    rehypePlugins={[rehypeRaw, rehypeSanitize]}
+                  >
+                    {popup.text}
+                  </ReactMarkdown>
+                </div>
+              ) : (
+                <pre className="break-words whitespace-pre-wrap font-mono text-[12.5px] leading-relaxed text-slate-700">
+                  {popup.text}
+                </pre>
+              )}
             </div>
           </div>
         </div>

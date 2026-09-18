@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import MessageBubble, { type BubbleMeta } from './MessageBubble'
 
 export interface ToolActivity {
@@ -44,6 +44,7 @@ export default function ChatView({
   const bottomRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const atBottomRef = useRef(true)
+  const [showRaw, setShowRaw] = useState(false)
 
   const handleScroll = () => {
     const el = scrollRef.current
@@ -74,6 +75,19 @@ export default function ChatView({
   return (
     <section className="flex h-full min-w-0 flex-1 flex-col bg-slate-100">
       <div ref={scrollRef} onScroll={handleScroll} className="mx-auto flex w-full max-w-3xl flex-1 min-h-0 flex-col gap-4 overflow-y-auto px-6 py-6">
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={() => setShowRaw((v) => !v)}
+            className={`cursor-pointer rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-wider transition-colors ${
+              showRaw
+                ? 'border-indigo-500 bg-indigo-500 text-white'
+                : 'border-slate-300 bg-white text-slate-500 hover:border-indigo-400 hover:text-indigo-600'
+            }`}
+          >
+            {showRaw ? 'Hide raw' : 'Show raw'}
+          </button>
+        </div>
         {isEmpty ? (
           <div className="m-auto max-w-[480px] text-center text-slate-500">
             <h2 className="mb-2 text-xl font-semibold text-slate-800">Chat with your agent</h2>
@@ -91,6 +105,7 @@ export default function ChatView({
                 content={msg.content}
                 createdAt={msg.createdAt}
                 meta={msg.meta}
+                showRaw={showRaw}
               />
             ))}
             {streaming && (
@@ -100,6 +115,7 @@ export default function ChatView({
                 streaming
                 streamStartedAt={streamStartedAt}
                 streamElapsedMs={streamElapsedMs}
+                showRaw={showRaw}
               />
             )}
             {error && (

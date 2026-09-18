@@ -17,6 +17,7 @@ interface MessageBubbleProps {
   streaming?: boolean
   streamStartedAt?: number | null
   streamElapsedMs?: number
+  showRaw?: boolean
 }
 
 function UserIcon({ className = '' }: { className?: string }) {
@@ -77,6 +78,7 @@ export default function MessageBubble({
   streaming,
   streamStartedAt,
   streamElapsedMs = 0,
+  showRaw = false,
 }: MessageBubbleProps) {
   const assistant = role === 'assistant'
   const rendered = assistant ? stripAssistantFence(content) : content
@@ -119,6 +121,16 @@ export default function MessageBubble({
             {rendered}
           </ReactMarkdown>
         </div>
+        {showRaw && assistant && (
+          <details open className="mt-2 rounded-lg border border-slate-300 bg-slate-50">
+            <summary className="cursor-pointer px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-400 select-none">
+              raw markdown
+            </summary>
+            <pre className="max-h-72 overflow-auto px-2.5 pb-2.5 font-mono text-[11px] leading-relaxed break-words whitespace-pre-wrap text-slate-700">
+              {rendered}
+            </pre>
+          </details>
+        )}
         {(createdAt || duration) && (
           <div className="mt-1 text-right text-[11px] text-slate-400">
             {createdAt && <span>{formatTimestamp(createdAt)}</span>}

@@ -1,5 +1,6 @@
 import { formatTimestamp } from '../api'
-import type { ThreadSummary } from '../types'
+import type { RunSummary, ThreadSummary } from '../types'
+import RunsList from './RunsList'
 
 interface SidebarProps {
   threads: ThreadSummary[]
@@ -7,7 +8,11 @@ interface SidebarProps {
   disabled: boolean
   showArchived: boolean
   view: 'chat' | 'runs'
+  runs: RunSummary[]
+  runsLoading: boolean
+  selectedRunId: string | null
   onViewChange: (view: 'chat' | 'runs') => void
+  onSelectRun: (threadId: string) => void
   onToggleArchived: () => void
   onSelect: (threadId: string) => void
   onNew: () => void
@@ -62,7 +67,11 @@ export default function Sidebar({
   disabled,
   showArchived,
   view,
+  runs,
+  runsLoading,
+  selectedRunId,
   onViewChange,
+  onSelectRun,
   onToggleArchived,
   onSelect,
   onNew,
@@ -108,85 +117,98 @@ export default function Sidebar({
         >
           + New chat
         </button>
-        <div className="flex gap-1.5">
-          <button
-            className={`flex-1 cursor-pointer rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors ${
-              !showArchived
-                ? 'bg-indigo-500/25 text-white'
-                : 'text-slate-300 hover:bg-white/5'
-            }`}
-            onClick={() => showArchived && onToggleArchived()}
-          >
-            Active · {activeCount}
-          </button>
-          <button
-            className={`flex-1 cursor-pointer rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors ${
-              showArchived
-                ? 'bg-indigo-500/25 text-white'
-                : 'text-slate-300 hover:bg-white/5'
-            }`}
-            onClick={() => !showArchived && onToggleArchived()}
-          >
-            Archived · {archivedCount}
-          </button>
-        </div>
+        {view === 'chat' && (
+          <div className="flex gap-1.5">
+            <button
+              className={`flex-1 cursor-pointer rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors ${
+                !showArchived
+                  ? 'bg-indigo-500/25 text-white'
+                  : 'text-slate-300 hover:bg-white/5'
+              }`}
+              onClick={() => showArchived && onToggleArchived()}
+            >
+              Active · {activeCount}
+            </button>
+            <button
+              className={`flex-1 cursor-pointer rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors ${
+                showArchived
+                  ? 'bg-indigo-500/25 text-white'
+                  : 'text-slate-300 hover:bg-white/5'
+              }`}
+              onClick={() => !showArchived && onToggleArchived()}
+            >
+              Archived · {archivedCount}
+            </button>
+          </div>
+        )}
       </div>
 
       <nav className="sidebar-scroll flex-1 overflow-y-auto p-2">
-        {visible.length === 0 && (
-          <p className="p-3 text-[13px] leading-relaxed text-slate-400">
-            {showArchived
-              ? 'No archived conversations.'
-              : 'No conversations yet. Send a message to start one.'}
-          </p>
+      {view === 'runs' ? (
+          <RunsList
+            summaries={runs}
+            selectedId={selectedRunId}
+            loading={runsLoading}
+            onSelect={onSelectRun}
+          />
+        ) : (
+          <>
+            {visible.length === 0 && (
+              <p className="p-3 text-[13px] leading-relaxed text-slate-400">
+                {showArchived
+                  ? 'No archived conversations.'
+                  : 'No conversations yet. Send a message to start one.'}
+              </p>
+            )}
+            {visible.map((thread) => (
+              <div
+                key={thread.thread_id}
+                className={`group mb-0.5 flex items-center gap-1 rounded-lg ${
+                  activeId === thread.thread_id ? 'bg-indigo-500/20' : ''
+                }`}
+              >
+                <button
+                  className="flex min-w-0 flex-1 cursor-pointer flex-col gap-1 rounded-lg p-2.5 text-left text-sm hover:bg-white/5 disabled:cursor-wait"
+                  onClick={() => onSelect(thread.thread_id)}
+                  disabled={disabled}
+                  title={thread.thread_id}
+                >
+                  <span className="truncate text-slate-100">{threadLabel(thread)}</span>
+                  <span className="truncate text-xs text-slate-400">
+                    {thread.message_count} messages · {formatTimestamp(thread.updated_at)}
+                  </span>
+                </button>
+                <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+                  <button
+                    className="cursor-pointer rounded-md p-1.5 text-slate-400 hover:bg-white/5 hover:text-white"
+                    onClick={() => onRename(thread.thread_id)}
+                    title="Rename conversation"
+                    aria-label="Rename conversation"
+                  >
+                    <PenIcon className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    className="cursor-pointer rounded-md p-1.5 text-slate-400 hover:bg-white/5 hover:text-white"
+                    onClick={() => onArchive(thread.thread_id)}
+                    title={showArchived ? 'Unarchive conversation' : 'Archive conversation'}
+                    aria-label={showArchived ? 'Unarchive conversation' : 'Archive conversation'}
+                  >
+                    <ArchiveIcon className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    className="cursor-pointer rounded-md px-1.5 py-1 text-base leading-none text-slate-400 hover:bg-white/5 hover:text-red-400 disabled:cursor-wait"
+                    onClick={() => onDelete(thread.thread_id)}
+                    disabled={disabled}
+                    title="Delete this thread"
+                    aria-label="Delete thread"
+                  >
+                    ×
+                  </button>
+                </div>
+              </div>
+            ))}
+          </>
         )}
-        {visible.map((thread) => (
-          <div
-            key={thread.thread_id}
-            className={`group mb-0.5 flex items-center gap-1 rounded-lg ${
-              activeId === thread.thread_id ? 'bg-indigo-500/20' : ''
-            }`}
-          >
-            <button
-              className="flex min-w-0 flex-1 cursor-pointer flex-col gap-1 rounded-lg p-2.5 text-left text-sm hover:bg-white/5 disabled:cursor-wait"
-              onClick={() => onSelect(thread.thread_id)}
-              disabled={disabled}
-              title={thread.thread_id}
-            >
-              <span className="truncate text-slate-100">{threadLabel(thread)}</span>
-              <span className="truncate text-xs text-slate-400">
-                {thread.message_count} messages · {formatTimestamp(thread.updated_at)}
-              </span>
-            </button>
-            <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
-              <button
-                className="cursor-pointer rounded-md p-1.5 text-slate-400 hover:bg-white/5 hover:text-white"
-                onClick={() => onRename(thread.thread_id)}
-                title="Rename conversation"
-                aria-label="Rename conversation"
-              >
-                <PenIcon className="h-3.5 w-3.5" />
-              </button>
-              <button
-                className="cursor-pointer rounded-md p-1.5 text-slate-400 hover:bg-white/5 hover:text-white"
-                onClick={() => onArchive(thread.thread_id)}
-                title={showArchived ? 'Unarchive conversation' : 'Archive conversation'}
-                aria-label={showArchived ? 'Unarchive conversation' : 'Archive conversation'}
-              >
-                <ArchiveIcon className="h-3.5 w-3.5" />
-              </button>
-              <button
-                className="cursor-pointer rounded-md px-1.5 py-1 text-base leading-none text-slate-400 hover:bg-white/5 hover:text-red-400 disabled:cursor-wait"
-                onClick={() => onDelete(thread.thread_id)}
-                disabled={disabled}
-                title="Delete this thread"
-                aria-label="Delete thread"
-              >
-                ×
-              </button>
-            </div>
-          </div>
-        ))}
       </nav>
     </aside>
   )

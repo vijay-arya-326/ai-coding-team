@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { deleteThread, fetchThread, fetchThreads, stopChat, streamChat, updateThread } from './api'
+import { deleteThread, fetchRunsSummary, fetchThread, fetchThreads, stopChat, streamChat, updateThread } from './api'
 import ChatView, { type ToolActivity, type UiMessage } from './components/ChatView'
 import ConfirmDialog from './components/ConfirmDialog'
 import RenameDialog from './components/RenameDialog'
 import RunsView from './components/RunsView'
 import Sidebar from './components/Sidebar'
 import Toasts, { type ToastItem } from './components/Toasts'
-import type { ThreadSummary } from './types'
+import type { RunSummary, ThreadSummary } from './types'
 
 export default function App() {
   const [view, setView] = useState<'chat' | 'runs'>('chat')
@@ -24,6 +24,9 @@ export default function App() {
   const [renaming, setRenaming] = useState<{ id: string; title: string } | null>(null)
   const [showArchived, setShowArchived] = useState(false)
   const [toasts, setToasts] = useState<ToastItem[]>([])
+  const [runSummaries, setRunSummaries] = useState<RunSummary[]>([])
+  const [runsLoading, setRunsLoading] = useState(true)
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
 
   const abortRef = useRef<AbortController | null>(null)
   const toastIdRef = useRef(0)
@@ -49,6 +52,30 @@ export default function App() {
     const timer = setInterval(() => setStreamElapsedMs(Date.now() - streamStartedAt), 250)
     return () => clearInterval(timer)
   }, [streamStartedAt])
+
+  const refreshRuns = useCallback(async () => {
+    try {
+      const data = await fetchRunsSummary()
+      setRunSummaries(data)
+      setSelectedRunId((prev) => prev ?? data[0]?.thread_id ?? null)
+    } catch {
+      /* keep previous list */
+    } finally {
+      setRunsLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void refreshRuns()
+  }, [refreshRuns])
+
+  const handleViewChange = useCallback(
+    (v: 'chat' | 'runs') => {
+      setView(v)
+      if (v === 'runs') void refreshRuns()
+    },
+    [refreshRuns],
+  )
 
   const refreshThreads = useCallback(async () => {
     try {
@@ -81,6 +108,7 @@ export default function App() {
     setStreaming(false)
     setStreamStartedAt(null)
     setStreamElapsedMs(0)
+    setView('chat')
   }, [])
 
   const selectThread = useCallback(async (threadId: string) => {
@@ -91,6 +119,7 @@ export default function App() {
     setError(null)
     setStreamStartedAt(null)
     setStreamElapsedMs(0)
+    setView('chat')
     setActiveId(threadId)
     try {
       const detail = await fetchThread(threadId)
@@ -289,7 +318,11 @@ export default function App() {
         disabled={streaming}
         showArchived={showArchived}
         view={view}
-        onViewChange={setView}
+        runs={runSummaries}
+        runsLoading={runsLoading}
+        selectedRunId={selectedRunId}
+        onViewChange={handleViewChange}
+        onSelectRun={setSelectedRunId}
         onToggleArchived={() => setShowArchived((v) => !v)}
         onSelect={(id) => void selectThread(id)}
         onNew={newChat}
@@ -298,7 +331,7 @@ export default function App() {
         onDelete={(id) => void handleDelete(id)}
       />
       {view === 'runs' ? (
-        <RunsView />
+        <RunsView summaries={runSummaries} selectedId={selectedRunId} />
       ) : (
         <ChatView
           messages={messages}
