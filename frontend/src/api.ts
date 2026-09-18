@@ -1,4 +1,5 @@
 import type {
+  ApprovalDecision,
   RunSummary,
   StreamEvent,
   ThreadDetail,
@@ -109,6 +110,15 @@ function parseEvent(raw: string): StreamEvent | null {
       }
     case 'end':
       return { event: 'end' }
+    case 'approval':
+      return {
+        event: 'approval',
+        approval_id: (payload as { approval_id: string }).approval_id,
+        kind: (payload as { kind: string }).kind,
+        description: (payload as { description: string }).description,
+        command: (payload as { command?: string | null }).command,
+        path: (payload as { path?: string | null }).path,
+      }
     case 'error':
       return { event: 'error', detail: (payload as { detail: string }).detail }
     default:
@@ -147,4 +157,16 @@ export async function* streamChat(
       if (evt) yield evt
     }
   }
+}
+
+export function decideApproval(
+  approvalId: string,
+  approved: boolean,
+  allow?: 'once' | 'always',
+): Promise<ApprovalDecision> {
+  return jsonFetch<ApprovalDecision>(`${BASE}/approvals/${encodeURIComponent(approvalId)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ approved, allow }),
+  })
 }

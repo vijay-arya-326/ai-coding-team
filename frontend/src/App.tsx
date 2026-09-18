@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { deleteThread, fetchRunsSummary, fetchThread, fetchThreads, stopChat, streamChat, updateThread } from './api'
+import { decideApproval, deleteThread, fetchRunsSummary, fetchThread, fetchThreads, stopChat, streamChat, updateThread } from './api'
 import ChatView, { type ToolActivity, type UiMessage } from './components/ChatView'
 import ConfirmDialog from './components/ConfirmDialog'
 import RenameDialog from './components/RenameDialog'
 import RunsView from './components/RunsView'
 import Sidebar from './components/Sidebar'
 import Toasts, { type ToastItem } from './components/Toasts'
-import type { RunSummary, ThreadSummary } from './types'
+import type { ApprovalDecision, ApprovalInfo, RunSummary, ThreadSummary } from './types'
 
 export default function App() {
   const [view, setView] = useState<'chat' | 'runs'>('chat')
@@ -27,6 +27,8 @@ export default function App() {
   const [runSummaries, setRunSummaries] = useState<RunSummary[]>([])
   const [runsLoading, setRunsLoading] = useState(true)
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
+  const [approvals, setApprovals] = useState<ApprovalInfo[]>([])
+  const [approvalDecisions, setApprovalDecisions] = useState<Record<string, ApprovalDecision>>({})
 
   const abortRef = useRef<AbortController | null>(null)
   const toastIdRef = useRef(0)
@@ -46,6 +48,28 @@ export default function App() {
       setToasts((prev) => prev.filter((t) => t.id !== id))
     }, 3000)
   }, [])
+
+  const handleApproval = useCallback(
+    async (approvalId: string, approved: boolean, allow?: 'once' | 'always') => {
+      try {
+        const decision = await decideApproval(approvalId, approved, allow)
+        setApprovalDecisions((prev) => ({ ...prev, [approvalId]: decision }))
+        if (!approved) {
+          notify('Action rejected', 'error')
+        } else if (decision.allow_granted === 'always') {
+          notify('Approved and added to permanent allowlist', 'success')
+        } else if (decision.allow_granted === 'once') {
+          notify('Approved; the same command auto-runs once next time', 'success')
+        } else {
+          notify('Action approved and executed', 'success')
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to resolve approval')
+        notify('Failed to resolve approval', 'error')
+      }
+    },
+    [notify],
+  )
 
   useEffect(() => {
     if (streamStartedAt === null) return
@@ -108,6 +132,8 @@ export default function App() {
     setStreaming(false)
     setStreamStartedAt(null)
     setStreamElapsedMs(0)
+    setApprovals([])
+    setApprovalDecisions({})
     setView('chat')
   }, [])
 
@@ -119,6 +145,8 @@ export default function App() {
     setError(null)
     setStreamStartedAt(null)
     setStreamElapsedMs(0)
+    setApprovals([])
+    setApprovalDecisions({})
     setView('chat')
     setActiveId(threadId)
     try {
@@ -262,6 +290,18 @@ export default function App() {
               ),
             )
             break
+          case 'approval':
+            setApprovals((prev) => [
+              ...prev,
+              {
+                approval_id: evt.approval_id,
+                kind: evt.kind,
+                description: evt.description,
+                command: evt.command,
+                path: evt.path,
+              },
+            ])
+            break
           case 'error':
             throw new Error(evt.detail)
           case 'end':
@@ -340,11 +380,14 @@ export default function App() {
           streamStartedAt={streamStartedAt}
           streamElapsedMs={streamElapsedMs}
           toolActivity={toolActivity}
+          approvals={approvals}
+          approvalDecisions={approvalDecisions}
           error={error}
           input={input}
           onInputChange={setInput}
           onSend={() => void handleSend()}
           onStop={handleStop}
+          onDecideApproval={(id, approved, allow) => void handleApproval(id, approved, allow)}
         />
       )}
       <ConfirmDialog

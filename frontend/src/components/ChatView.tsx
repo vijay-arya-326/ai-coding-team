@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import MessageBubble, { type BubbleMeta } from './MessageBubble'
+import type { ApprovalDecision, ApprovalInfo } from '../types'
 
 export interface ToolActivity {
   name: string
@@ -21,11 +22,14 @@ interface ChatViewProps {
   streamStartedAt: number | null
   streamElapsedMs: number
   toolActivity: ToolActivity[]
+  approvals: ApprovalInfo[]
+  approvalDecisions: Record<string, ApprovalDecision>
   error: string | null
   input: string
   onInputChange: (value: string) => void
   onSend: () => void
   onStop: () => void
+  onDecideApproval: (approvalId: string, approved: boolean, allow?: 'once' | 'always') => void
 }
 
 export default function ChatView({
@@ -35,11 +39,14 @@ export default function ChatView({
   streamStartedAt,
   streamElapsedMs,
   toolActivity,
+  approvals,
+  approvalDecisions,
   error,
   input,
   onInputChange,
   onSend,
   onStop,
+  onDecideApproval,
 }: ChatViewProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -92,7 +99,7 @@ export default function ChatView({
           <div className="m-auto max-w-[480px] text-center text-slate-500">
             <h2 className="mb-2 text-xl font-semibold text-slate-800">Chat with your agent</h2>
             <p className="leading-relaxed">
-              Powered by a LangGraph agent running on phi3 via Ollama. Conversations are stored per
+              Powered by a LangGraph agent running on llama3.1:8b via Ollama with tools (file operations, shell commands). Conversations are stored per
               thread in SQLite.
             </p>
           </div>
@@ -141,6 +148,77 @@ export default function ChatView({
             ))}
           </div>
         )}
+
+        {approvals.map((a) => {
+          const decision = approvalDecisions[a.approval_id]
+          return (
+            <div
+              key={a.approval_id}
+              className="w-full max-w-md self-start rounded-xl border border-amber-200 bg-amber-50 p-3.5"
+            >
+              <div className="flex items-center gap-2 text-[13px] font-semibold text-amber-800">
+                <span aria-hidden="true">⚠</span> Action requires approval
+              </div>
+              <p className="mt-1 text-[13px] leading-snug text-amber-900">{a.description}</p>
+              {a.command && (
+                <code className="mt-1.5 block rounded-md bg-white/70 px-2 py-1 text-[12px] break-all font-mono text-slate-700">
+                  {a.command}
+                </code>
+              )}
+              {!decision ? (
+                <div className="mt-2.5 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => onDecideApproval(a.approval_id, true)}
+                    className="cursor-pointer rounded-lg bg-emerald-600 px-3.5 py-1.5 text-[13px] font-semibold text-white transition-colors hover:bg-emerald-700"
+                  >
+                    Approve
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onDecideApproval(a.approval_id, true, 'once')}
+                    className="cursor-pointer rounded-lg border border-emerald-600 bg-white px-3.5 py-1.5 text-[13px] font-semibold text-emerald-700 transition-colors hover:bg-emerald-50"
+                  >
+                    Approve &amp; Allow once
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onDecideApproval(a.approval_id, true, 'always')}
+                    className="cursor-pointer rounded-lg border border-emerald-600 bg-white px-3.5 py-1.5 text-[13px] font-semibold text-emerald-700 transition-colors hover:bg-emerald-50"
+                  >
+                    Approve &amp; Always allow
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onDecideApproval(a.approval_id, false)}
+                    className="cursor-pointer rounded-lg border border-slate-300 bg-white px-3.5 py-1.5 text-[13px] font-semibold text-slate-600 transition-colors hover:bg-slate-100"
+                  >
+                    Reject
+                  </button>
+                </div>
+              ) : decision.status === 'rejected' ? (
+                <p className="mt-2.5 text-[12px] text-slate-500">✕ Rejected — nothing was executed.</p>
+              ) : decision.status === 'approved' ? (
+                <>
+                  <pre className="mt-2.5 max-h-40 overflow-auto rounded-lg bg-white/80 px-2.5 py-2 text-[11.5px] leading-relaxed break-words whitespace-pre-wrap font-mono text-slate-700">
+                    {decision.result ?? decision.output ?? ''}
+                    {decision.exit_code != null ? `exit ${decision.exit_code}` : ''}
+                    {decision.error ? `Error: ${decision.error}` : ''}
+                  </pre>
+                  {(decision.allow_granted === 'once' || decision.allow_granted === 'always') && (
+                    <p className="mt-1.5 text-[11.5px] text-slate-500">
+                      {decision.allow_granted === 'once'
+                        ? 'Exemption granted — the same command auto-runs once next time.'
+                        : 'Exemption granted — the same command is allowed permanently.'}
+                    </p>
+                  )}
+                </>
+              ) : (
+                <p className="mt-2.5 text-[12px] text-slate-500">Approval not found (may have expired).</p>
+              )}
+            </div>
+          )
+        })}
         <div ref={bottomRef} />
       </div>
 

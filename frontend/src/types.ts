@@ -36,8 +36,37 @@ export type StreamEvent =
   | { event: 'token'; delta: string }
   | { event: 'tool_start'; tool: string }
   | { event: 'tool_end'; tool: string; output: string }
+  | {
+      event: 'approval'
+      approval_id: string
+      kind: string
+      description: string
+      command?: string | null
+      path?: string | null
+    }
   | { event: 'end' }
   | { event: 'error'; detail: string }
+
+export interface ApprovalInfo {
+  approval_id: string
+  kind: string
+  description: string
+  command?: string | null
+  path?: string | null
+}
+
+export interface ApprovalDecision {
+  status: string
+  approval_id: string
+  kind?: string
+  result?: string
+  exit_code?: number
+  output?: string
+  error?: string
+  allow_granted?: 'once' | 'always'
+}
+
+export type ApprovalMode = 'once' | 'always'
 
 export interface ToolComm {
   name: string | null

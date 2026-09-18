@@ -26,6 +26,7 @@ ALLOWED_ORIGINS = [
 ]
 
 from app.agent import (
+    PENDING_APPROVALS,
     close_checkpointer,
     delete_thread,
     ensure_thread_meta,
@@ -34,6 +35,7 @@ from app.agent import (
     list_threads,
     record_message,
     record_runs,
+    resolve_approval,
     runs_summary,
     thread_runs,
     update_thread_meta,
@@ -86,6 +88,11 @@ class ChatRequest(BaseModel):
 class ThreadUpdateRequest(BaseModel):
     title: str | None = None
     archived: bool | None = None
+
+
+class ApprovalRequest(BaseModel):
+    approved: bool
+    allow: str | None = None
 
 
 _active_runs: dict[str, asyncio.Event] = {}
@@ -227,6 +234,21 @@ async def _event_generator(req: ChatRequest, config: RunnableConfig, stop_event:
                         "output": str(output),
                     }),
                 }
+                out_text = str(output)
+                if out_text.startswith("ACTION_REQUIRES_APPROVAL:"):
+                    approval_id = out_text.split(":", 1)[1].strip()
+                    entry = PENDING_APPROVALS.get(approval_id)
+                    if entry:
+                        yield {
+                            "event": "approval",
+                            "data": json.dumps({
+                                "approval_id": approval_id,
+                                "kind": entry["kind"],
+                                "description": entry["description"],
+                                "command": entry["params"].get("command"),
+                                "path": entry["params"].get("path"),
+                            }),
+                        }
 
         if current_run is not None:
             current_run["ended_at"] = _now()
@@ -295,6 +317,13 @@ async def thread_stop(thread_id: str) -> dict[str, str]:
     _active_runs[thread_id].set()
     logger.info("chat stop requested thread=%s", thread_id)
     return {"status": "stopped"}
+
+
+@app.post("/approvals/{approval_id}")
+async def approval_decision(approval_id: str, req: ApprovalRequest) -> dict:
+    result = await asyncio.to_thread(resolve_approval, approval_id, req.approved, req.allow)
+    logger.info("approval %s approved=%s -> %s", approval_id, req.approved, result["status"])
+    return result
 
 
 @app.get("/threads")

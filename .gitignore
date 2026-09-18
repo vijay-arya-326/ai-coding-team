@@ -10,3 +10,6 @@ server.err
 agent_state.db
 db/
 logs/
+tools_demo_test/
+tools_demo/
+allowed_commands.json

@@ -3,6 +3,9 @@
 import json
 import logging
 import os
+import shutil
+import subprocess
+import time as _time
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -19,7 +22,7 @@ from langgraph.prebuilt import ToolNode, tools_condition
 logger = logging.getLogger("app.agent")
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "phi3")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 THREADS_DB_PATH = os.getenv(
@@ -27,7 +30,7 @@ THREADS_DB_PATH = os.getenv(
 )
 
 SYSTEM_PROMPT = (
-    "You are a helpful assistant running on phi3. Be concise and accurate. "
+    "You are a helpful assistant running on llama3.1:8b. Be concise and accurate. "
     "Use the tools available to you when they help answer the user's question."
 )
 
@@ -42,7 +45,310 @@ def calculator(expression: str) -> float:
     return float(result)
 
 
-TOOLS = [calculator]
+PROJECT_ROOT = os.path.dirname(BASE_DIR)
+
+SAFE_COMMANDS = (
+    "ls", "dir", "pwd", "cat", "type", "head", "tail", "echo",
+    "where", "which", "find", "git status", "git log", "git diff",
+    "git branch", "git ls-files", "git blame",
+)
+
+UNSAFE_MARKERS = (
+    "rm ", "rm -", "rmdir", "remove-item", "del ", "erase ",
+    "format ", "shutdown", "restart", "sudo", "su ",
+    "curl ", "wget ", "iwr ", "invoke-webrequest", "invoke-restmethod",
+    "pip install", "pip uninstall", "npm install", "npm uninstall",
+    "git push", "git pull", "git reset", "git clean", "git revert",
+    "git checkout .", "chmod", "chown", "chkdsk",
+    "taskkill", "kill ", "stop-process", "stop-service",
+    ">", "|", ";", "&&", "||", "$(",
+)
+
+# Pending approvals for destructive or unsafe actions, keyed by approval id.
+PENDING_APPROVALS: dict[str, dict] = {}
+_approval_counter = 0
+
+# Command exemptions. ONE_TIME_ALLOWED lives in memory only; PERMANENT_ALLOWED
+# persists to a JSON file and is loaded at startup.
+ALLOWED_COMMANDS_FILE = os.getenv(
+    "ALLOWED_COMMANDS_FILE", os.path.join(BASE_DIR, "allowed_commands.json")
+)
+
+
+def _load_permanent_allowed() -> set[str]:
+    try:
+        with open(ALLOWED_COMMANDS_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        return {str(c).strip() for c in data.get("allowed", []) if str(c).strip()}
+    except (OSError, ValueError):
+        return set()
+
+
+PERMANENT_ALLOWED: set[str] = _load_permanent_allowed()
+ONE_TIME_ALLOWED: set[str] = set()
+
+
+def _save_permanent_allowed() -> None:
+    with open(ALLOWED_COMMANDS_FILE, "w", encoding="utf-8") as f:
+        json.dump({"allowed": sorted(PERMANENT_ALLOWED)}, f, indent=2)
+
+
+def _normalize_command(command: str) -> str:
+    return " ".join(command.split()).lower()
+
+
+def grant_exception(command: str, allow: str | None) -> bool:
+    """Add a command exemption. 'always' persists it, 'once' allows a single use."""
+    if not command or allow not in ("once", "always"):
+        return False
+    cmd = _normalize_command(command)
+    if allow == "always":
+        PERMANENT_ALLOWED.add(cmd)
+        _save_permanent_allowed()
+        return True
+    ONE_TIME_ALLOWED.add(cmd)
+    return True
+
+
+def classify_command(command: str) -> bool:
+    """Return True when the command may run without approval.
+
+    Safe whitelist and granted exemptions (permanent or one-time) bypass approval;
+    the one-time exemption is consumed after a single use.
+    """
+    cmd = _normalize_command(command)
+    if not cmd:
+        return False
+    for prefix in SAFE_COMMANDS:
+        if cmd == prefix or cmd.startswith(prefix + " "):
+            return True
+    if cmd in PERMANENT_ALLOWED:
+        return True
+    if cmd in ONE_TIME_ALLOWED:
+        ONE_TIME_ALLOWED.discard(cmd)
+        return True
+    for marker in UNSAFE_MARKERS:
+        if marker in cmd:
+            return False
+    return False
+
+
+def _resolve_project_path(raw: str) -> str:
+    """Resolve a model-supplied path to an absolute path inside PROJECT_ROOT.
+
+    POSIX-style root paths like '/tools_demo' are treated as project-root relative
+    (they come from POSIX-trained models). Paths escaping PROJECT_ROOT are rejected.
+    """
+    raw = os.path.expandvars(os.path.expanduser((raw or "").strip().strip('"')))
+    if not raw:
+        raise ValueError("empty path")
+    if raw.startswith("/") and not raw.startswith("//"):
+        resolved = os.path.normpath(os.path.join(PROJECT_ROOT, raw.lstrip("/")))
+    elif os.path.isabs(raw):
+        resolved = os.path.normpath(raw)
+    else:
+        resolved = os.path.normpath(os.path.join(PROJECT_ROOT, raw))
+    resolved = os.path.abspath(resolved)
+    root = os.path.abspath(PROJECT_ROOT)
+    if resolved != root and os.path.commonpath([resolved, root]) != root:
+        raise ValueError(f"path resolves outside the project root: {raw}")
+    return resolved
+
+
+def _pending_approval(kind: str, params: dict, description: str) -> str:
+    global _approval_counter
+    _approval_counter += 1
+    approval_id = f"appr_{_approval_counter}"
+    PENDING_APPROVALS[approval_id] = {
+        "kind": kind,
+        "params": params,
+        "description": description,
+        "ts": _time.time(),
+    }
+    return approval_id
+
+
+def _run_shell(command: str, cwd: str, timeout: int = 90) -> tuple[int, str]:
+    if os.name == "nt":
+        c = command.strip()
+        if c == "ls":
+            command = "dir"
+        elif c.startswith("ls "):
+            command = "dir " + c[3:]
+        elif c == "pwd":
+            command = "cd"
+        elif c == "cat" or c.startswith("cat "):
+            command = "type " + c[3:] if c != "cat" else "type"
+    proc = subprocess.run(
+        command,
+        shell=True,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    out = (proc.stdout or "").strip()
+    err = (proc.stderr or "").strip()
+    return proc.returncode, (out + ("\n" + err if err else "")).strip()
+
+
+def resolve_approval(approval_id: str, approved: bool, allow: str | None = None) -> dict:
+    """Execute or reject a previously requested approval.
+
+    allow may be 'once' or 'always' to grant the same command an exemption from
+    future approval prompts (persisted for 'always').
+    """
+    entry = PENDING_APPROVALS.pop(approval_id, None)
+    if entry is None:
+        return {"status": "not_found", "approval_id": approval_id}
+    if not approved:
+        return {"status": "rejected", "approval_id": approval_id, "kind": entry["kind"]}
+    kind, params = entry["kind"], entry["params"]
+    result: dict = {"status": "approved", "kind": kind, "approval_id": approval_id}
+    granted = False
+    try:
+        if kind == "delete_file":
+            os.remove(params["path"])
+            result["result"] = f"deleted file {params['path']}"
+        elif kind == "delete_folder":
+            shutil.rmtree(params["path"])
+            result["result"] = f"deleted folder {params['path']}"
+        elif kind == "shell":
+            code, out = _run_shell(params["command"], params.get("cwd") or PROJECT_ROOT)
+            result["exit_code"] = code
+            result["output"] = out
+            if allow in ("once", "always"):
+                granted = grant_exception(params["command"], allow)
+        else:
+            result["status"] = "unknown_kind"
+    except FileNotFoundError:
+        result["error"] = "path not found"
+    except PermissionError as exc:
+        result["error"] = f"permission denied: {exc}"
+    except subprocess.TimeoutExpired:
+        result["error"] = "command timed out"
+    if granted:
+        result["allow_granted"] = allow
+    return result
+
+
+@tool
+def create_dir(path: str) -> str:
+    """Create a directory (and any missing parents) at the given absolute or relative path."""
+    try:
+        target = _resolve_project_path(path)
+        os.makedirs(target, exist_ok=True)
+        return f"created directory {target}"
+    except Exception as exc:  # noqa: BLE001
+        return f"ERROR: could not create directory {path}: {exc}"
+
+
+@tool
+def create_file(path: str, content: str) -> str:
+    """Create or overwrite a text file at the given path with the given content."""
+    try:
+        target = _resolve_project_path(path)
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "w", encoding="utf-8") as f:
+            f.write(content)
+        return f"created file {target} ({len(content)} chars)"
+    except Exception as exc:  # noqa: BLE001
+        return f"ERROR: could not create file {path}: {exc}"
+
+
+@tool
+def edit_file(path: str, old_string: str, new_string: str) -> str:
+    """Replace old_string with new_string in a text file. old_string must be an exact, unique match."""
+    try:
+        target = _resolve_project_path(path)
+    except Exception as exc:  # noqa: BLE001
+        return f"ERROR: {exc}"
+    try:
+        with open(target, "r", encoding="utf-8") as f:
+            content = f.read()
+    except FileNotFoundError:
+        return f"ERROR: file not found: {target}"
+    except Exception as exc:  # noqa: BLE001
+        return f"ERROR: could not read {target}: {exc}"
+    if old_string not in content:
+        return f"ERROR: old_string not found in {target}"
+    if content.count(old_string) > 1:
+        return f"ERROR: old_string appears {content.count(old_string)} times; include more context"
+    with open(target, "w", encoding="utf-8") as f:
+        f.write(content.replace(old_string, new_string, 1))
+    return f"edited {target}"
+
+
+@tool
+def rename_file(path: str, new_path: str) -> str:
+    """Rename or move path to new_path."""
+    try:
+        src = _resolve_project_path(path)
+        dst = _resolve_project_path(new_path)
+    except Exception as exc:  # noqa: BLE001
+        return f"ERROR: {exc}"
+    try:
+        os.rename(src, dst)
+        return f"renamed {src} -> {dst}"
+    except Exception as exc:  # noqa: BLE001
+        return f"ERROR: could not rename {path}: {exc}"
+
+
+@tool
+def delete_file(path: str) -> str:
+    """Delete a file. Requires user confirmation before the file is removed."""
+    try:
+        target = _resolve_project_path(path)
+    except Exception as exc:  # noqa: BLE001
+        return f"ERROR: {exc}"
+    approval_id = _pending_approval(
+        "delete_file", {"path": target}, f"Delete file `{target}`?"
+    )
+    return f"ACTION_REQUIRES_APPROVAL:{approval_id}"
+
+
+@tool
+def delete_folder(path: str) -> str:
+    """Delete a folder and everything inside it. Requires user confirmation before deletion."""
+    try:
+        target = _resolve_project_path(path)
+    except Exception as exc:  # noqa: BLE001
+        return f"ERROR: {exc}"
+    approval_id = _pending_approval(
+        "delete_folder", {"path": target}, f"Delete folder `{target}` recursively?"
+    )
+    return f"ACTION_REQUIRES_APPROVAL:{approval_id}"
+
+
+@tool
+def run_shell_command(command: str) -> str:
+    """Run a shell command in the project root. Read-only commands run immediately; anything else requires explicit user approval."""
+    if not classify_command(command):
+        approval_id = _pending_approval(
+            "shell",
+            {"command": command, "cwd": PROJECT_ROOT},
+            f"Run shell command `{command}`?",
+        )
+        return f"ACTION_REQUIRES_APPROVAL:{approval_id}"
+    try:
+        code, out = _run_shell(command, PROJECT_ROOT)
+        return f"exit {code}\n{out}"
+    except subprocess.TimeoutExpired:
+        return "ERROR: command timed out"
+    except Exception as exc:  # noqa: BLE001
+        return f"ERROR: {exc}"
+
+
+TOOLS = [
+    calculator,
+    create_dir,
+    create_file,
+    edit_file,
+    rename_file,
+    delete_file,
+    delete_folder,
+    run_shell_command,
+]
 
 
 def _create_llm() -> ChatOllama:
