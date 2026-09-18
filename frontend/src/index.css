@@ -66,11 +66,24 @@ body {
 .markdown ul,
 .markdown ol {
   margin: 0.4em 0;
-  padding-left: 1.25em;
+  padding-left: 1.6em;
+}
+
+.markdown ul {
+  list-style: disc;
+}
+
+.markdown ol {
+  list-style: decimal;
 }
 
 .markdown li {
   margin: 0.2em 0;
+}
+
+.markdown li::marker {
+  font-weight: 600;
+  color: #4f6ef7;
 }
 
 .markdown code {
@@ -114,6 +127,10 @@ body {
 
 .markdown del {
   text-decoration: line-through;
+}
+
+.markdown u {
+  text-decoration: underline;
 }
 
 .markdown h1,

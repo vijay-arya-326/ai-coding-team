@@ -1,5 +1,7 @@
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import rehypeRaw from 'rehype-raw'
+import rehypeSanitize from 'rehype-sanitize'
 import { formatTimestamp } from '../api'
 
 export interface BubbleMeta {
@@ -110,7 +112,10 @@ export default function MessageBubble({
           </span>
         </div>
         <div className="markdown break-words text-slate-800">
-          <ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml>
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            rehypePlugins={[rehypeRaw, rehypeSanitize]}
+          >
             {rendered}
           </ReactMarkdown>
         </div>

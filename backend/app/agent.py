@@ -1,5 +1,6 @@
 """A basic LangGraph agent backed by Ollama's phi3 model, with SQLite thread persistence."""
 
+import json
 import logging
 import os
 import uuid
@@ -170,6 +171,20 @@ async def _meta_conn() -> aiosqlite.Connection:
             await conn.execute(
                 "ALTER TABLE thread_messages ADD COLUMN stream_elapsed_ms INTEGER"
             )
+        await conn.execute(
+            "CREATE TABLE IF NOT EXISTS thread_runs ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " thread_id TEXT NOT NULL,"
+            " run_index INTEGER NOT NULL,"
+            " started_at TEXT,"
+            " ended_at TEXT,"
+            " input_tokens INTEGER,"
+            " output_tokens INTEGER,"
+            " total_tokens INTEGER,"
+            " input_preview TEXT,"
+            " output_preview TEXT,"
+            " tools_json TEXT)"
+        )
         await conn.commit()
         logger.info("Thread metadata tables ready at %s", THREADS_DB_PATH)
         _meta_conn._conn = conn
@@ -212,6 +227,147 @@ async def record_message(
         (thread_id, role, content, created_at, stream_started_at, stream_elapsed_ms),
     )
     await conn.commit()
+
+
+def _iso_delta_ms(started_at: str | None, ended_at: str | None) -> float | None:
+    if not started_at or not ended_at:
+        return None
+    try:
+        start = datetime.fromisoformat(started_at)
+        end = datetime.fromisoformat(ended_at)
+        return round((end - start).total_seconds() * 1000)
+    except (ValueError, TypeError):
+        return None
+
+
+async def record_runs(thread_id: str, runs: list[dict[str, Any]]) -> None:
+    """Persist one chat call's model rounds with token usage and tool communication."""
+    if not runs:
+        return
+    conn = await _meta_conn()
+    cur = await conn.execute(
+        "SELECT COALESCE(MAX(run_index), 0) FROM thread_runs WHERE thread_id = ?",
+        (thread_id,),
+    )
+    row = await cur.fetchone()
+    start_index = row[0] if row else 0
+    for i, run in enumerate(runs, start=1):
+        await conn.execute(
+            "INSERT INTO thread_runs (thread_id, run_index, started_at, ended_at,"
+            " input_tokens, output_tokens, total_tokens, input_preview, output_preview,"
+            " tools_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                thread_id,
+                start_index + i,
+                run.get("started_at"),
+                run.get("ended_at"),
+                run.get("input_tokens"),
+                run.get("output_tokens"),
+                run.get("total_tokens"),
+                (run.get("input_preview") or "")[:50000],
+                (run.get("output_preview") or "")[:50000],
+                json.dumps(run.get("tools") or [], ensure_ascii=False),
+            ),
+        )
+    await conn.commit()
+
+
+def _run_to_dict(row: tuple) -> dict[str, Any]:
+    (
+        _id,
+        _thread_id,
+        run_index,
+        started_at,
+        ended_at,
+        input_tokens,
+        output_tokens,
+        total_tokens,
+        input_preview,
+        output_preview,
+        tools_json,
+    ) = row
+    tools = json.loads(tools_json) if tools_json else []
+    return {
+        "run_index": run_index,
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "duration_ms": _iso_delta_ms(started_at, ended_at),
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+        "input_preview": input_preview,
+        "output_preview": output_preview,
+        "tools": tools,
+    }
+
+
+async def thread_runs(thread_id: str) -> dict[str, Any] | None:
+    """Return one thread's model-round runs (token usage + tool communication)."""
+    conn = await _meta_conn()
+    cur = await conn.execute(
+        "SELECT * FROM thread_runs WHERE thread_id = ? ORDER BY run_index", (thread_id,)
+    )
+    rows = await cur.fetchall()
+    if not rows:
+        return None
+    title, archived = await _load_thread_meta(thread_id)
+    runs = [_run_to_dict(r) for r in rows]
+    totals = {
+        "input_tokens": sum(r["input_tokens"] or 0 for r in runs),
+        "output_tokens": sum(r["output_tokens"] or 0 for r in runs),
+        "total_tokens": sum(r["total_tokens"] or 0 for r in runs),
+        "tool_count": sum(len(r["tools"]) for r in runs),
+    }
+    non_null = [r["duration_ms"] for r in runs if r["duration_ms"] is not None]
+    totals["avg_duration_ms"] = (
+        round(sum(non_null) / len(non_null)) if non_null else None
+    )
+    return {
+        "thread_id": thread_id,
+        "title": title,
+        "archived": archived,
+        "run_count": len(runs),
+        "totals": totals,
+        "runs": runs,
+    }
+
+
+async def runs_summary() -> list[dict[str, Any]]:
+    """Summarise run usage per thread, newest first."""
+    conn = await _meta_conn()
+    cur = await conn.execute("SELECT * FROM thread_runs ORDER BY id")
+    rows = await cur.fetchall()
+    by_thread: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        run = _run_to_dict(row)
+        thread_id = row[1]
+        agg = by_thread.setdefault(
+            thread_id,
+            {
+                "thread_id": thread_id,
+                "run_count": 0,
+                "total_input_tokens": 0,
+                "total_output_tokens": 0,
+                "total_tokens": 0,
+                "tool_count": 0,
+                "last_run_at": None,
+            },
+        )
+        agg["run_count"] += 1
+        agg["total_input_tokens"] += run["input_tokens"] or 0
+        agg["total_output_tokens"] += run["output_tokens"] or 0
+        agg["total_tokens"] += run["total_tokens"] or 0
+        agg["tool_count"] += len(run["tools"])
+        if run["ended_at"] and (
+            agg["last_run_at"] is None or run["ended_at"] > agg["last_run_at"]
+        ):
+            agg["last_run_at"] = run["ended_at"]
+    result = list(by_thread.values())
+    for thread_id, agg in by_thread.items():
+        title, _archived = await _load_thread_meta(thread_id)
+        agg["title"] = title
+    result.sort(key=lambda a: a["last_run_at"] or "", reverse=True)
+    return result
 
 
 async def _load_thread_meta(thread_id: str) -> tuple[str | None, bool]:
@@ -377,3 +533,9 @@ async def get_thread(thread_id: str) -> dict[str, Any] | None:
 async def delete_thread(thread_id: str) -> None:
     saver = await get_checkpointer()
     await saver.adelete_thread(thread_id)
+    conn = await _meta_conn()
+    for table in ("thread_messages", "thread_meta", "thread_runs"):
+        await conn.execute(
+            f"DELETE FROM {table} WHERE thread_id = ?", (thread_id,)
+        )
+    await conn.commit()

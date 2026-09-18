@@ -9,6 +9,7 @@ import json
 import os
 import time
 from contextlib import asynccontextmanager
+from typing import Any
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -32,6 +33,9 @@ from app.agent import (
     get_thread,
     list_threads,
     record_message,
+    record_runs,
+    runs_summary,
+    thread_runs,
     update_thread_meta,
     _now,
 )
@@ -105,6 +109,39 @@ async def _event_generator(req: ChatRequest, config: RunnableConfig, stop_event:
         yield {"event": "start", "data": json.dumps({"thread_id": thread_id})}
 
         graph = await get_graph()
+        runs: list[dict] = []
+        current_run: dict | None = None
+
+        def attach_tool_start(name: str | None, args: Any) -> None:
+            target = current_run if current_run is not None else (runs[-1] if runs else None)
+            if target is None:
+                return
+            tools = target.setdefault("tools", [])
+            if tools and tools[-1].get("output") is None:
+                return
+            tools.append({
+                "name": name,
+                "input": json.dumps(args, default=str)[:1000] if args is not None else None,
+                "output": None,
+            })
+
+        def attach_tool_end(output: Any) -> None:
+            scope = current_run if current_run is not None else (runs[-1] if runs else None)
+            if scope is None:
+                return
+            for t in reversed(scope.get("tools", [])):
+                if t.get("output") is None:
+                    t["output"] = str(output)[:1000]
+                    return
+
+        def round_input_preview() -> str:
+            if not runs:
+                return req.message[:50000]
+            parts = []
+            for t in runs[-1].get("tools", []):
+                parts.append(f"{t['name']}: in={t['input']} out={t['output']}")
+            return ("[tool results] " + " | ".join(parts))[:50000]
+
         async for event in graph.astream_events(
             {"messages": [HumanMessage(content=req.message)]},
             config=config,
@@ -115,25 +152,74 @@ async def _event_generator(req: ChatRequest, config: RunnableConfig, stop_event:
                 logger.info("chat stop requested thread=%s", thread_id)
                 break
             kind = event["event"]
-            if kind == "on_chat_model_stream":
-                chunk = event["data"].get("chunk")
+            data = event.get("data", {}) or {}
+            if kind == "on_chat_model_start":
+                if current_run is not None:
+                    current_run["ended_at"] = _now()
+                    runs.append(current_run)
+                current_run = {
+                    "started_at": _now(),
+                    "ended_at": None,
+                    "input_preview": round_input_preview(),
+                    "output_preview": "",
+                    "input_tokens": None,
+                    "output_tokens": None,
+                    "total_tokens": None,
+                    "tools": [],
+                }
+            elif kind == "on_chat_model_stream":
+                chunk = data.get("chunk")
                 text = chunk.content if chunk else ""
                 if text:
                     tokens += 1
                     assistant_parts.append(text)
+                    if current_run is not None:
+                        current_run["output_preview"] += text
                     yield {
                         "event": "token",
                         "data": json.dumps({"delta": text}),
                     }
+            elif kind == "on_chat_model_end":
+                usage = None
+                out = data.get("output")
+                if isinstance(out, list):
+                    out = out[-1] if out else None
+                if out is not None:
+                    usage = getattr(out, "usage_metadata", None)
+                    if usage is None:
+                        usage = (getattr(out, "response_metadata", None) or {}).get("usage")
+                usage = usage or {}
+                if current_run is not None:
+                    current_run["input_tokens"] = (
+                        usage.get("input_tokens") or usage.get("prompt_tokens")
+                    )
+                    current_run["output_tokens"] = (
+                        usage.get("output_tokens") or usage.get("completion_tokens")
+                    )
+                    if current_run["input_tokens"] is not None and current_run["output_tokens"] is not None:
+                        current_run["total_tokens"] = (
+                            usage.get("total_tokens")
+                            or current_run["input_tokens"] + current_run["output_tokens"]
+                        )
+                    else:
+                        current_run["total_tokens"] = usage.get("total_tokens")
+                    current_run["ended_at"] = _now()
+                    runs.append(current_run)
+                    current_run = None
             elif kind == "on_tool_start":
+                attach_tool_start(
+                    data.get("name") or event.get("name"),
+                    data.get("input"),
+                )
                 yield {
                     "event": "tool_start",
                     "data": json.dumps(event["name"]),
                 }
             elif kind == "on_tool_end":
-                output = event["data"]["output"]
+                output = data.get("output")
                 if hasattr(output, "content"):
                     output = getattr(output, "content")
+                attach_tool_end(output)
                 yield {
                     "event": "tool_end",
                     "data": json.dumps({
@@ -141,6 +227,10 @@ async def _event_generator(req: ChatRequest, config: RunnableConfig, stop_event:
                         "output": str(output),
                     }),
                 }
+
+        if current_run is not None:
+            current_run["ended_at"] = _now()
+            runs.append(current_run)
 
         if assistant_parts:
             await record_message(
@@ -151,6 +241,10 @@ async def _event_generator(req: ChatRequest, config: RunnableConfig, stop_event:
                 stream_started_at=stream_started_at,
                 stream_elapsed_ms=max(0, round((time.time() - started) * 1000)),
             )
+        try:
+            await record_runs(thread_id, runs)
+        except Exception:
+            logger.exception("record_runs failed thread=%s runs=%d", thread_id, len(runs))
 
         if stopped:
             logger.info(
@@ -207,6 +301,23 @@ async def thread_stop(thread_id: str) -> dict[str, str]:
 async def threads() -> list[dict]:
     result = await list_threads()
     logger.info("threads listed count=%d", len(result))
+    return result
+
+
+@app.get("/runs")
+async def runs_list() -> list[dict]:
+    result = await runs_summary()
+    logger.info("runs summary count=%d", len(result))
+    return result
+
+
+@app.get("/runs/{thread_id}")
+async def runs_detail(thread_id: str) -> dict:
+    result = await thread_runs(thread_id)
+    if result is None:
+        logger.info("runs not found id=%s", thread_id)
+        raise HTTPException(status_code=404, detail="No runs for thread")
+    logger.info("runs fetched id=%s runs=%d", thread_id, result["run_count"])
     return result
 
 

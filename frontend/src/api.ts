@@ -1,4 +1,11 @@
-import type { StreamEvent, ThreadDetail, ThreadSummary, ThreadUpdate } from './types'
+import type {
+  RunSummary,
+  StreamEvent,
+  ThreadDetail,
+  ThreadRuns,
+  ThreadSummary,
+  ThreadUpdate,
+} from './types'
 
 const BASE = '/api'
 
@@ -19,6 +26,14 @@ async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
 
 export function fetchThreads(): Promise<ThreadSummary[]> {
   return jsonFetch<ThreadSummary[]>(`${BASE}/threads`)
+}
+
+export function fetchRunsSummary(): Promise<RunSummary[]> {
+  return jsonFetch<RunSummary[]>(`${BASE}/runs`)
+}
+
+export function fetchThreadRuns(threadId: string): Promise<ThreadRuns> {
+  return jsonFetch<ThreadRuns>(`${BASE}/runs/${encodeURIComponent(threadId)}`)
 }
 
 export function fetchThread(threadId: string): Promise<ThreadDetail> {

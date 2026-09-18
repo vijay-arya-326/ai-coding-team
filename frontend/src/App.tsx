@@ -3,11 +3,13 @@ import { deleteThread, fetchThread, fetchThreads, stopChat, streamChat, updateTh
 import ChatView, { type ToolActivity, type UiMessage } from './components/ChatView'
 import ConfirmDialog from './components/ConfirmDialog'
 import RenameDialog from './components/RenameDialog'
+import RunsView from './components/RunsView'
 import Sidebar from './components/Sidebar'
 import Toasts, { type ToastItem } from './components/Toasts'
 import type { ThreadSummary } from './types'
 
 export default function App() {
+  const [view, setView] = useState<'chat' | 'runs'>('chat')
   const [threads, setThreads] = useState<ThreadSummary[]>([])
   const [activeId, setActiveId] = useState<string | null>(null)
   const [messages, setMessages] = useState<UiMessage[]>([])
@@ -286,6 +288,8 @@ export default function App() {
         activeId={activeId}
         disabled={streaming}
         showArchived={showArchived}
+        view={view}
+        onViewChange={setView}
         onToggleArchived={() => setShowArchived((v) => !v)}
         onSelect={(id) => void selectThread(id)}
         onNew={newChat}
@@ -293,19 +297,23 @@ export default function App() {
         onArchive={(id) => void toggleArchive(id)}
         onDelete={(id) => void handleDelete(id)}
       />
-      <ChatView
-        messages={messages}
-        streaming={streaming}
-        stream={streamText}
-        streamStartedAt={streamStartedAt}
-        streamElapsedMs={streamElapsedMs}
-        toolActivity={toolActivity}
-        error={error}
-        input={input}
-        onInputChange={setInput}
-        onSend={() => void handleSend()}
-        onStop={handleStop}
-      />
+      {view === 'runs' ? (
+        <RunsView />
+      ) : (
+        <ChatView
+          messages={messages}
+          streaming={streaming}
+          stream={streamText}
+          streamStartedAt={streamStartedAt}
+          streamElapsedMs={streamElapsedMs}
+          toolActivity={toolActivity}
+          error={error}
+          input={input}
+          onInputChange={setInput}
+          onSend={() => void handleSend()}
+          onStop={handleStop}
+        />
+      )}
       <ConfirmDialog
         open={pendingDelete !== null}
         title="Delete conversation?"

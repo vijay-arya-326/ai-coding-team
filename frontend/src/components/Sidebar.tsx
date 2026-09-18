@@ -6,6 +6,8 @@ interface SidebarProps {
   activeId: string | null
   disabled: boolean
   showArchived: boolean
+  view: 'chat' | 'runs'
+  onViewChange: (view: 'chat' | 'runs') => void
   onToggleArchived: () => void
   onSelect: (threadId: string) => void
   onNew: () => void
@@ -59,6 +61,8 @@ export default function Sidebar({
   activeId,
   disabled,
   showArchived,
+  view,
+  onViewChange,
   onToggleArchived,
   onSelect,
   onNew,
@@ -74,6 +78,28 @@ export default function Sidebar({
     <aside className="flex w-80 shrink-0 flex-col bg-[#1f2430] text-slate-200">
       <div className="flex flex-col gap-3 border-b border-white/10 px-4 pb-3 pt-5">
         <h1 className="text-lg font-semibold text-white">Agent Chat</h1>
+        <div className="flex gap-1.5">
+          <button
+            className={`flex-1 cursor-pointer rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors ${
+              view === 'chat'
+                ? 'bg-indigo-500/25 text-white'
+                : 'text-slate-300 hover:bg-white/5'
+            }`}
+            onClick={() => onViewChange('chat')}
+          >
+            💬 Chat
+          </button>
+          <button
+            className={`flex-1 cursor-pointer rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors ${
+              view === 'runs'
+                ? 'bg-indigo-500/25 text-white'
+                : 'text-slate-300 hover:bg-white/5'
+            }`}
+            onClick={() => onViewChange('runs')}
+          >
+            ▤ Runs
+          </button>
+        </div>
         <button
           className="cursor-pointer rounded-lg bg-indigo-500 px-3 py-2.5 text-sm font-medium text-white transition-colors hover:bg-indigo-600 disabled:cursor-not-allowed disabled:opacity-60"
           onClick={onNew}
