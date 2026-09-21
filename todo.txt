@@ -1,0 +1,9 @@
+1. searxng docker -- for web search api 
+2. obscura or playwright to view web page and summarization
+3. create workspace as ".local_agent_workspace", that defines safe unsafe command and other rules for agent
+4. Agent will break every task, re arrange them after everytask is complete 
+5. Todo section in UI for agent to show todo items
+6. workspace Creations api and UI section to add create new workspace or select one of the existing workspace
+7. workspace management section 
+8. Thread to be group with workspace also 
+9. In case of git init, agent should be checking for new update regularly or atleast before push

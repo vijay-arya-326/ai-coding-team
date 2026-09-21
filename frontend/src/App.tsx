@@ -1,81 +1,46 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { decideApproval, deleteThread, fetchRunsSummary, fetchThread, fetchThreads, stopChat, streamChat, updateThread } from './api'
-import ChatView, { type ToolActivity, type UiMessage } from './components/ChatView'
+import { useCallback, useEffect, useState } from 'react'
+import { deleteThread, fetchRunsSummary, fetchThreads, updateThread } from './api'
+import ChatView from './components/ChatView'
 import ConfirmDialog from './components/ConfirmDialog'
 import RenameDialog from './components/RenameDialog'
 import RunsView from './components/RunsView'
 import Sidebar from './components/Sidebar'
-import Toasts, { type ToastItem } from './components/Toasts'
-import type { ApprovalDecision, ApprovalInfo, RunSummary, ThreadSummary } from './types'
+import Toasts from './components/Toasts'
+import { useChatSession } from './hooks/useChatSession'
+import { useToasts } from './hooks/useToasts'
+import type { RunSummary, ThreadSummary } from './types'
 
 export default function App() {
   const [view, setView] = useState<'chat' | 'runs'>('chat')
   const [threads, setThreads] = useState<ThreadSummary[]>([])
-  const [activeId, setActiveId] = useState<string | null>(null)
-  const [messages, setMessages] = useState<UiMessage[]>([])
-  const [input, setInput] = useState('')
-  const [streaming, setStreaming] = useState(false)
-  const [streamText, setStreamText] = useState('')
-  const [streamStartedAt, setStreamStartedAt] = useState<number | null>(null)
-  const [streamElapsedMs, setStreamElapsedMs] = useState(0)
-  const [toolActivity, setToolActivity] = useState<ToolActivity[]>([])
-  const [error, setError] = useState<string | null>(null)
+  const [showArchived, setShowArchived] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<string | null>(null)
   const [renaming, setRenaming] = useState<{ id: string; title: string } | null>(null)
-  const [showArchived, setShowArchived] = useState(false)
-  const [toasts, setToasts] = useState<ToastItem[]>([])
   const [runSummaries, setRunSummaries] = useState<RunSummary[]>([])
   const [runsLoading, setRunsLoading] = useState(true)
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
-  const [approvals, setApprovals] = useState<ApprovalInfo[]>([])
-  const [approvalDecisions, setApprovalDecisions] = useState<Record<string, ApprovalDecision>>({})
 
-  const abortRef = useRef<AbortController | null>(null)
-  const toastIdRef = useRef(0)
-  const stoppedRef = useRef(false)
-  const streamThreadIdRef = useRef<string | null>(null)
+  const { toasts, notify, dismiss } = useToasts()
 
-  const handleStop = useCallback(() => {
-    stoppedRef.current = true
-    if (streamThreadIdRef.current) void stopChat(streamThreadIdRef.current)
-    abortRef.current?.abort()
+  const viewChat = useCallback(() => setView('chat'), [])
+  const refreshThreads = useCallback(async () => {
+    try {
+      setThreads(await fetchThreads())
+    } catch {
+      /* keep previous list */
+    }
   }, [])
-
-  const notify = useCallback((message: string, kind: ToastItem['kind'] = 'success') => {
-    const id = ++toastIdRef.current
-    setToasts((prev) => [...prev, { id, message, kind }])
-    setTimeout(() => {
-      setToasts((prev) => prev.filter((t) => t.id !== id))
-    }, 3000)
-  }, [])
-
-  const handleApproval = useCallback(
-    async (approvalId: string, approved: boolean, allow?: 'once' | 'always') => {
-      try {
-        const decision = await decideApproval(approvalId, approved, allow)
-        setApprovalDecisions((prev) => ({ ...prev, [approvalId]: decision }))
-        if (!approved) {
-          notify('Action rejected', 'error')
-        } else if (decision.allow_granted === 'always') {
-          notify('Approved and added to permanent allowlist', 'success')
-        } else if (decision.allow_granted === 'once') {
-          notify('Approved; the same command auto-runs once next time', 'success')
-        } else {
-          notify('Action approved and executed', 'success')
-        }
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to resolve approval')
-        notify('Failed to resolve approval', 'error')
-      }
-    },
-    [notify],
-  )
 
   useEffect(() => {
-    if (streamStartedAt === null) return
-    const timer = setInterval(() => setStreamElapsedMs(Date.now() - streamStartedAt), 250)
-    return () => clearInterval(timer)
-  }, [streamStartedAt])
+    void refreshThreads()
+  }, [refreshThreads])
+
+const chat = useChatSession({
+    notify,
+    onNavigateChat: viewChat,
+    onThreadsChanged: () => void refreshThreads(),
+  })
+  const { activeId, newChat, reportError } = chat
 
   const refreshRuns = useCallback(async () => {
     try {
@@ -101,19 +66,6 @@ export default function App() {
     [refreshRuns],
   )
 
-  const refreshThreads = useCallback(async () => {
-    try {
-      setThreads(await fetchThreads())
-    } catch {
-      /* keep previous list */
-    }
-  }, [])
-
-  useEffect(() => {
-    void refreshThreads()
-    return () => abortRef.current?.abort()
-  }, [refreshThreads])
-
   const threadLabel = useCallback(
     (threadId: string): string => {
       const t = threads.find((x) => x.thread_id === threadId)
@@ -121,60 +73,6 @@ export default function App() {
     },
     [threads],
   )
-
-  const newChat = useCallback(() => {
-    abortRef.current?.abort()
-    setActiveId(null)
-    setMessages([])
-    setStreamText('')
-    setToolActivity([])
-    setError(null)
-    setStreaming(false)
-    setStreamStartedAt(null)
-    setStreamElapsedMs(0)
-    setApprovals([])
-    setApprovalDecisions({})
-    setView('chat')
-  }, [])
-
-  const selectThread = useCallback(async (threadId: string) => {
-    abortRef.current?.abort()
-    setStreaming(false)
-    setStreamText('')
-    setToolActivity([])
-    setError(null)
-    setStreamStartedAt(null)
-    setStreamElapsedMs(0)
-    setApprovals([])
-    setApprovalDecisions({})
-    setView('chat')
-    setActiveId(threadId)
-    try {
-      const detail = await fetchThread(threadId)
-      setMessages(
-        detail.messages
-          .filter(
-            (m): m is typeof m & { role: 'user' | 'assistant' } =>
-              m.role === 'user' || m.role === 'assistant',
-          )
-          .map((m, i) => ({
-            id: `${threadId}-${i}`,
-            role: m.role,
-            content: m.content,
-            createdAt: m.created_at,
-            meta:
-              m.stream_elapsed_ms != null && m.stream_started_at
-                ? {
-                    startedAt: new Date(m.stream_started_at).getTime(),
-                    elapsedMs: m.stream_elapsed_ms,
-                  }
-                : null,
-          })),
-      )
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load thread')
-    }
-  }, [])
 
   const handleDelete = useCallback((threadId: string) => {
     setPendingDelete(threadId)
@@ -184,17 +82,17 @@ export default function App() {
     if (!pendingDelete) return
     const threadId = pendingDelete
     try {
-      await deleteThread(threadId)
+await deleteThread(threadId)
       if (threadId === activeId) newChat()
       await refreshThreads()
       notify('Conversation deleted')
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete thread')
+      reportError(err instanceof Error ? err.message : 'Failed to delete thread')
       notify('Failed to delete conversation', 'error')
     } finally {
       setPendingDelete(null)
     }
-  }, [activeId, newChat, notify, pendingDelete, refreshThreads])
+  }, [activeId, newChat, notify, pendingDelete, refreshThreads, reportError])
 
   const pendingThread = threads.find((t) => t.thread_id === pendingDelete)
 
@@ -212,14 +110,14 @@ export default function App() {
         await updateThread(renaming.id, { title })
         await refreshThreads()
         notify('Conversation renamed')
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to rename thread')
+} catch (err) {
+        reportError(err instanceof Error ? err.message : 'Failed to rename thread')
         notify('Failed to rename conversation', 'error')
       } finally {
         setRenaming(null)
       }
     },
-    [refreshThreads, renaming, notify],
+    [refreshThreads, renaming, notify, reportError],
   )
 
   const toggleArchive = useCallback(
@@ -229,133 +127,21 @@ export default function App() {
         await updateThread(threadId, { archived: !thread?.archived })
         await refreshThreads()
         notify(!thread?.archived ? 'Conversation archived' : 'Conversation restored')
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to update thread')
+} catch (err) {
+        reportError(err instanceof Error ? err.message : 'Failed to update thread')
         notify('Failed to update conversation', 'error')
       }
     },
-    [notify, refreshThreads, threads],
+    [notify, refreshThreads, threads, reportError],
   )
-
-  const handleSend = useCallback(async () => {
-    const text = input.trim()
-    if (!text || streaming) return
-
-    const now = new Date().toISOString()
-    setInput('')
-    setError(null)
-    setStreamText('')
-    setToolActivity([])
-    setStreamStartedAt(null)
-    setStreamElapsedMs(0)
-    setMessages((prev) => [
-      ...prev,
-      { id: `u-${Date.now()}`, role: 'user', content: text, createdAt: now },
-    ])
-    setStreaming(true)
-
-    const controller = new AbortController()
-    abortRef.current = controller
-    let currentId = activeId
-    let acc = ''
-    let startedAt = 0
-    stoppedRef.current = false
-    streamThreadIdRef.current = null
-
-    try {
-      for await (const evt of streamChat(text, currentId ?? undefined, controller.signal)) {
-        switch (evt.event) {
-          case 'start':
-            if (!currentId) {
-              currentId = evt.thread_id
-              setActiveId(evt.thread_id)
-            }
-            streamThreadIdRef.current = currentId
-            startedAt = Date.now()
-            setStreamStartedAt(startedAt)
-            break
-          case 'token':
-            acc += evt.delta
-            setStreamText(acc)
-            break
-          case 'tool_start':
-            setToolActivity((prev) => [...prev, { name: evt.tool }])
-            break
-          case 'tool_end':
-            setToolActivity((prev) =>
-              prev.map((t, i) =>
-                i === prev.length - 1 && t.name === evt.tool
-                  ? { ...t, output: evt.output }
-                  : t,
-              ),
-            )
-            break
-          case 'approval':
-            setApprovals((prev) => [
-              ...prev,
-              {
-                approval_id: evt.approval_id,
-                kind: evt.kind,
-                description: evt.description,
-                command: evt.command,
-                path: evt.path,
-              },
-            ])
-            break
-          case 'error':
-            throw new Error(evt.detail)
-          case 'end':
-            break
-        }
-      }
-
-      const elapsedMs = startedAt ? Date.now() - startedAt : 0
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `a-${Date.now()}`,
-          role: 'assistant',
-          content: acc || '…',
-          createdAt: new Date().toISOString(),
-          meta: { startedAt, elapsedMs },
-        },
-      ])
-    } catch (err) {
-      if (!controller.signal.aborted) {
-        setError(err instanceof Error ? err.message : 'Chat failed')
-      } else if (stoppedRef.current) {
-        const elapsedMs = startedAt ? Date.now() - startedAt : 0
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: `a-${Date.now()}`,
-            role: 'assistant',
-            content: acc || '…',
-            createdAt: new Date().toISOString(),
-            meta: { startedAt, elapsedMs },
-          },
-        ])
-        setError(null)
-      }
-    } finally {
-      setStreaming(false)
-      setStreamText('')
-      setToolActivity([])
-      setStreamStartedAt(null)
-      setStreamElapsedMs(0)
-      streamThreadIdRef.current = null
-      abortRef.current = null
-      void refreshThreads()
-    }
-  }, [activeId, input, refreshThreads, streaming])
 
   return (
     <div className="flex h-screen">
-      <Toasts toasts={toasts} onDismiss={(id) => setToasts((prev) => prev.filter((t) => t.id !== id))} />
+      <Toasts toasts={toasts} onDismiss={dismiss} />
       <Sidebar
         threads={threads}
-        activeId={activeId}
-        disabled={streaming}
+        activeId={chat.activeId}
+        disabled={chat.streaming}
         showArchived={showArchived}
         view={view}
         runs={runSummaries}
@@ -364,8 +150,8 @@ export default function App() {
         onViewChange={handleViewChange}
         onSelectRun={setSelectedRunId}
         onToggleArchived={() => setShowArchived((v) => !v)}
-        onSelect={(id) => void selectThread(id)}
-        onNew={newChat}
+        onSelect={(id) => void chat.selectThread(id)}
+        onNew={chat.newChat}
         onRename={handleRename}
         onArchive={(id) => void toggleArchive(id)}
         onDelete={(id) => void handleDelete(id)}
@@ -374,20 +160,20 @@ export default function App() {
         <RunsView summaries={runSummaries} selectedId={selectedRunId} />
       ) : (
         <ChatView
-          messages={messages}
-          streaming={streaming}
-          stream={streamText}
-          streamStartedAt={streamStartedAt}
-          streamElapsedMs={streamElapsedMs}
-          toolActivity={toolActivity}
-          approvals={approvals}
-          approvalDecisions={approvalDecisions}
-          error={error}
-          input={input}
-          onInputChange={setInput}
-          onSend={() => void handleSend()}
-          onStop={handleStop}
-          onDecideApproval={(id, approved, allow) => void handleApproval(id, approved, allow)}
+          messages={chat.messages}
+          streaming={chat.streaming}
+          stream={chat.streamText}
+          streamStartedAt={chat.streamStartedAt}
+          streamElapsedMs={chat.streamElapsedMs}
+          toolActivity={chat.toolActivity}
+          approvals={chat.approvals}
+          approvalDecisions={chat.approvalDecisions}
+          error={chat.error}
+          input={chat.input}
+          onInputChange={chat.setInput}
+          onSend={() => void chat.handleSend()}
+          onStop={chat.handleStop}
+          onDecideApproval={(id, approved, allow) => void chat.handleApproval(id, approved, allow)}
         />
       )}
       <ConfirmDialog

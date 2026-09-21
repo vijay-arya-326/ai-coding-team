@@ -12,4 +12,5 @@ db/
 logs/
 tools_demo_test/
 tools_demo/
+testing/
 allowed_commands.json

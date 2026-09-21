@@ -9,7 +9,6 @@ import json
 import os
 import time
 from contextlib import asynccontextmanager
-from typing import Any
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -27,6 +26,9 @@ ALLOWED_ORIGINS = [
 
 from app.agent import (
     PENDING_APPROVALS,
+    APP_VERSION,
+    GENERATION_IDLE_TIMEOUT,
+    OLLAMA_MODEL,
     close_checkpointer,
     delete_thread,
     ensure_thread_meta,
@@ -42,6 +44,7 @@ from app.agent import (
     _now,
 )
 from app.logging import init_logging
+from app.runtracker import RunRegistry, RunTracker
 
 logger = init_logging()
 
@@ -95,11 +98,15 @@ class ApprovalRequest(BaseModel):
     allow: str | None = None
 
 
-_active_runs: dict[str, asyncio.Event] = {}
+_runs = RunRegistry()
 
 
-def _stop_event(thread_id: str) -> asyncio.Event:
-    return _active_runs.setdefault(thread_id, asyncio.Event())
+async def _require_thread(thread_id: str) -> dict:
+    """Return thread metadata or raise a 404."""
+    thread = await get_thread(thread_id)
+    if thread is None:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    return thread
 
 
 async def _event_generator(req: ChatRequest, config: RunnableConfig, stop_event: asyncio.Event):
@@ -116,143 +123,92 @@ async def _event_generator(req: ChatRequest, config: RunnableConfig, stop_event:
         yield {"event": "start", "data": json.dumps({"thread_id": thread_id})}
 
         graph = await get_graph()
-        runs: list[dict] = []
-        current_run: dict | None = None
+        tracker = RunTracker(req.message)
 
-        def attach_tool_start(name: str | None, args: Any) -> None:
-            target = current_run if current_run is not None else (runs[-1] if runs else None)
-            if target is None:
-                return
-            tools = target.setdefault("tools", [])
-            if tools and tools[-1].get("output") is None:
-                return
-            tools.append({
-                "name": name,
-                "input": json.dumps(args, default=str)[:1000] if args is not None else None,
-                "output": None,
-            })
-
-        def attach_tool_end(output: Any) -> None:
-            scope = current_run if current_run is not None else (runs[-1] if runs else None)
-            if scope is None:
-                return
-            for t in reversed(scope.get("tools", [])):
-                if t.get("output") is None:
-                    t["output"] = str(output)[:1000]
-                    return
-
-        def round_input_preview() -> str:
-            if not runs:
-                return req.message[:50000]
-            parts = []
-            for t in runs[-1].get("tools", []):
-                parts.append(f"{t['name']}: in={t['input']} out={t['output']}")
-            return ("[tool results] " + " | ".join(parts))[:50000]
-
-        async for event in graph.astream_events(
+        stream = graph.astream_events(
             {"messages": [HumanMessage(content=req.message)]},
             config=config,
             version="v2",
-        ):
-            if stop_event.is_set():
-                stopped = True
-                logger.info("chat stop requested thread=%s", thread_id)
-                break
-            kind = event["event"]
-            data = event.get("data", {}) or {}
-            if kind == "on_chat_model_start":
-                if current_run is not None:
-                    current_run["ended_at"] = _now()
-                    runs.append(current_run)
-                current_run = {
-                    "started_at": _now(),
-                    "ended_at": None,
-                    "input_preview": round_input_preview(),
-                    "output_preview": "",
-                    "input_tokens": None,
-                    "output_tokens": None,
-                    "total_tokens": None,
-                    "tools": [],
-                }
-            elif kind == "on_chat_model_stream":
-                chunk = data.get("chunk")
-                text = chunk.content if chunk else ""
-                if text:
-                    tokens += 1
-                    assistant_parts.append(text)
-                    if current_run is not None:
-                        current_run["output_preview"] += text
-                    yield {
-                        "event": "token",
-                        "data": json.dumps({"delta": text}),
-                    }
-            elif kind == "on_chat_model_end":
-                usage = None
-                out = data.get("output")
-                if isinstance(out, list):
-                    out = out[-1] if out else None
-                if out is not None:
-                    usage = getattr(out, "usage_metadata", None)
-                    if usage is None:
-                        usage = (getattr(out, "response_metadata", None) or {}).get("usage")
-                usage = usage or {}
-                if current_run is not None:
-                    current_run["input_tokens"] = (
-                        usage.get("input_tokens") or usage.get("prompt_tokens")
+        )
+        while True:
+                try:
+                    event = await asyncio.wait_for(
+                        stream.__anext__(), timeout=GENERATION_IDLE_TIMEOUT
                     )
-                    current_run["output_tokens"] = (
-                        usage.get("output_tokens") or usage.get("completion_tokens")
+                except asyncio.TimeoutError:
+                    await asyncio.wait_for(stream.aclose(), timeout=5)
+                    raise TimeoutError(
+                        f"model produced no output for {GENERATION_IDLE_TIMEOUT}s; aborting"
                     )
-                    if current_run["input_tokens"] is not None and current_run["output_tokens"] is not None:
-                        current_run["total_tokens"] = (
-                            usage.get("total_tokens")
-                            or current_run["input_tokens"] + current_run["output_tokens"]
-                        )
-                    else:
-                        current_run["total_tokens"] = usage.get("total_tokens")
-                    current_run["ended_at"] = _now()
-                    runs.append(current_run)
-                    current_run = None
-            elif kind == "on_tool_start":
-                attach_tool_start(
-                    data.get("name") or event.get("name"),
-                    data.get("input"),
-                )
-                yield {
-                    "event": "tool_start",
-                    "data": json.dumps(event["name"]),
-                }
-            elif kind == "on_tool_end":
-                output = data.get("output")
-                if hasattr(output, "content"):
-                    output = getattr(output, "content")
-                attach_tool_end(output)
-                yield {
-                    "event": "tool_end",
-                    "data": json.dumps({
-                        "name": event["name"],
-                        "output": str(output),
-                    }),
-                }
-                out_text = str(output)
-                if out_text.startswith("ACTION_REQUIRES_APPROVAL:"):
-                    approval_id = out_text.split(":", 1)[1].strip()
-                    entry = PENDING_APPROVALS.get(approval_id)
-                    if entry:
+                except StopAsyncIteration:
+                    break
+                if stop_event.is_set():
+                    stopped = True
+                    logger.info("chat stop requested thread=%s", thread_id)
+                    break
+                kind = event["event"]
+                data = event.get("data", {}) or {}
+                if kind == "on_chat_model_start":
+                    tracker.start_run()
+                elif kind == "on_chat_model_stream":
+                    chunk = data.get("chunk")
+                    text = chunk.content if chunk else ""
+                    if text:
+                        tokens += 1
+                        assistant_parts.append(text)
+                        tracker.token(text)
                         yield {
-                            "event": "approval",
-                            "data": json.dumps({
-                                "approval_id": approval_id,
-                                "kind": entry["kind"],
-                                "description": entry["description"],
-                                "command": entry["params"].get("command"),
-                                "path": entry["params"].get("path"),
-                            }),
+                            "event": "token",
+                            "data": json.dumps({"delta": text}),
                         }
+                elif kind == "on_chat_model_end":
+                    usage = None
+                    out = data.get("output")
+                    if isinstance(out, list):
+                        out = out[-1] if out else None
+                    if out is not None:
+                        usage = getattr(out, "usage_metadata", None)
+                        if usage is None:
+                            usage = (getattr(out, "response_metadata", None) or {}).get("usage")
+                    tracker.finish_run(usage or {})
+                elif kind == "on_tool_start":
+                    tracker.attach_tool_start(
+                        data.get("name") or event.get("name"),
+                        data.get("input"),
+                    )
+                    yield {
+                        "event": "tool_start",
+                        "data": json.dumps(event["name"]),
+                    }
+                elif kind == "on_tool_end":
+                    output = data.get("output")
+                    if hasattr(output, "content"):
+                        output = getattr(output, "content")
+                    tracker.attach_tool_end(output)
+                    yield {
+                        "event": "tool_end",
+                        "data": json.dumps({
+                            "name": event["name"],
+                            "output": str(output),
+                        }),
+                    }
+                    out_text = str(output)
+                    if out_text.startswith("ACTION_REQUIRES_APPROVAL:"):
+                        approval_id = out_text.split(":", 1)[1].strip()
+                        entry = PENDING_APPROVALS.get(approval_id)
+                        if entry:
+                            yield {
+                                "event": "approval",
+                                "data": json.dumps({
+                                    "approval_id": approval_id,
+                                    "kind": entry["kind"],
+                                    "description": entry["description"],
+                                    "command": entry["params"].get("command"),
+                                    "path": entry["params"].get("path"),
+                                }),
+                            }
 
-        if current_run is not None:
-            current_run["ended_at"] = _now()
-            runs.append(current_run)
+        tracker.close()
 
         if assistant_parts:
             await record_message(
@@ -264,9 +220,9 @@ async def _event_generator(req: ChatRequest, config: RunnableConfig, stop_event:
                 stream_elapsed_ms=max(0, round((time.time() - started) * 1000)),
             )
         try:
-            await record_runs(thread_id, runs)
+            await record_runs(thread_id, tracker.runs)
         except Exception:
-            logger.exception("record_runs failed thread=%s runs=%d", thread_id, len(runs))
+            logger.exception("record_runs failed thread=%s runs=%d", thread_id, len(tracker.runs))
 
         if stopped:
             logger.info(
@@ -287,12 +243,17 @@ async def _event_generator(req: ChatRequest, config: RunnableConfig, stop_event:
         logger.exception("chat error thread=%s", thread_id)
         yield {"event": "error", "data": json.dumps({"detail": str(exc)})}
     finally:
-        _active_runs.pop(thread_id, None)
+        _runs.clear(thread_id)
 
 
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/")
+async def root() -> dict[str, str]:
+    return {"name": "AI Agent Backend", "version": APP_VERSION, "model": OLLAMA_MODEL}
 
 
 @app.post("/chat")
@@ -302,7 +263,7 @@ async def chat(req: ChatRequest) -> EventSourceResponse:
         recursion_limit=25,
         configurable={"thread_id": thread_id},
     )
-    stop_event = _stop_event(thread_id)
+    stop_event = _runs.stop_event(thread_id)
     return EventSourceResponse(
         _event_generator(req, config, stop_event),
         headers={"Cache-Control": "no-cache"},
@@ -311,10 +272,10 @@ async def chat(req: ChatRequest) -> EventSourceResponse:
 
 @app.post("/threads/{thread_id}/stop")
 async def thread_stop(thread_id: str) -> dict[str, str]:
-    if thread_id not in _active_runs:
+    if not _runs.is_active(thread_id):
         logger.info("chat stop idle thread=%s", thread_id)
         return {"status": "idle"}
-    _active_runs[thread_id].set()
+    _runs.request_stop(thread_id)
     logger.info("chat stop requested thread=%s", thread_id)
     return {"status": "stopped"}
 
@@ -352,20 +313,14 @@ async def runs_detail(thread_id: str) -> dict:
 
 @app.get("/threads/{thread_id}")
 async def thread_detail(thread_id: str) -> dict:
-    thread = await get_thread(thread_id)
-    if thread is None:
-        logger.info("thread not found id=%s", thread_id)
-        raise HTTPException(status_code=404, detail="Thread not found")
+    thread = await _require_thread(thread_id)
     logger.info("thread fetched id=%s messages=%d", thread_id, len(thread["messages"]))
     return thread
 
 
 @app.delete("/threads/{thread_id}")
 async def thread_delete(thread_id: str) -> dict[str, str]:
-    before = await get_thread(thread_id)
-    if before is None:
-        logger.info("thread delete miss id=%s", thread_id)
-        raise HTTPException(status_code=404, detail="Thread not found")
+    await _require_thread(thread_id)
     await delete_thread(thread_id)
     logger.info("thread deleted id=%s", thread_id)
     return {"status": "deleted"}
@@ -373,10 +328,7 @@ async def thread_delete(thread_id: str) -> dict[str, str]:
 
 @app.patch("/threads/{thread_id}")
 async def thread_update(thread_id: str, update: ThreadUpdateRequest) -> dict:
-    before = await get_thread(thread_id)
-    if before is None:
-        logger.info("thread update miss id=%s", thread_id)
-        raise HTTPException(status_code=404, detail="Thread not found")
+    await _require_thread(thread_id)
     result = await update_thread_meta(
         thread_id,
         title=update.title,
