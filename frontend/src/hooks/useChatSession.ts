@@ -27,7 +27,7 @@ export interface ChatSession {
   selectThread: (threadId: string) => Promise<void>
   handleSend: () => Promise<void>
   handleStop: () => void
-  handleApproval: (approvalId: string, approved: boolean, allow?: 'once' | 'always') => Promise<void>
+  handleApproval: (approvalId: string, approved: boolean, allow?: 'always') => Promise<void>
   reportError: (message: string) => void
 }
 
@@ -84,7 +84,7 @@ export function useChatSession({
   }, [])
 
   const handleApproval = useCallback(
-    async (approvalId: string, approved: boolean, allow?: 'once' | 'always') => {
+    async (approvalId: string, approved: boolean, allow?: 'always') => {
       try {
         const decision = await decideApproval(approvalId, approved, allow)
         setApprovalDecisions((prev) => ({ ...prev, [approvalId]: decision }))
@@ -92,8 +92,6 @@ export function useChatSession({
           notify('Action rejected', 'error')
         } else if (decision.allow_granted === 'always') {
           notify('Approved and added to permanent allowlist', 'success')
-        } else if (decision.allow_granted === 'once') {
-          notify('Approved; the same command auto-runs once next time', 'success')
         } else {
           notify('Action approved and executed', 'success')
         }

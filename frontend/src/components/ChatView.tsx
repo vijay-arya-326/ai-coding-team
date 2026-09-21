@@ -29,7 +29,7 @@ interface ChatViewProps {
   onInputChange: (value: string) => void
   onSend: () => void
   onStop: () => void
-  onDecideApproval: (approvalId: string, approved: boolean, allow?: 'once' | 'always') => void
+  onDecideApproval: (approvalId: string, approved: boolean, allow?: 'always') => void
 }
 
 export default function ChatView({
@@ -150,7 +150,7 @@ export default function ChatView({
         )}
 
         {approvals.map((a) => {
-          const decision = approvalDecisions[a.approval_id]
+          if (approvalDecisions[a.approval_id]) return null
           return (
             <div
               key={a.approval_id}
@@ -165,57 +165,29 @@ export default function ChatView({
                   {a.command}
                 </code>
               )}
-              {!decision ? (
-                <div className="mt-2.5 flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={() => onDecideApproval(a.approval_id, true)}
-                    className="cursor-pointer rounded-lg bg-emerald-600 px-3.5 py-1.5 text-[13px] font-semibold text-white transition-colors hover:bg-emerald-700"
-                  >
-                    Approve
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onDecideApproval(a.approval_id, true, 'once')}
-                    className="cursor-pointer rounded-lg border border-emerald-600 bg-white px-3.5 py-1.5 text-[13px] font-semibold text-emerald-700 transition-colors hover:bg-emerald-50"
-                  >
-                    Approve &amp; Allow once
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onDecideApproval(a.approval_id, true, 'always')}
-                    className="cursor-pointer rounded-lg border border-emerald-600 bg-white px-3.5 py-1.5 text-[13px] font-semibold text-emerald-700 transition-colors hover:bg-emerald-50"
-                  >
-                    Approve &amp; Always allow
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onDecideApproval(a.approval_id, false)}
-                    className="cursor-pointer rounded-lg border border-slate-300 bg-white px-3.5 py-1.5 text-[13px] font-semibold text-slate-600 transition-colors hover:bg-slate-100"
-                  >
-                    Reject
-                  </button>
-                </div>
-              ) : decision.status === 'rejected' ? (
-                <p className="mt-2.5 text-[12px] text-slate-500">✕ Rejected — nothing was executed.</p>
-              ) : decision.status === 'approved' ? (
-                <>
-                  <pre className="mt-2.5 max-h-40 overflow-auto rounded-lg bg-white/80 px-2.5 py-2 text-[11.5px] leading-relaxed break-words whitespace-pre-wrap font-mono text-slate-700">
-                    {decision.result ?? decision.output ?? ''}
-                    {decision.exit_code != null ? `exit ${decision.exit_code}` : ''}
-                    {decision.error ? `Error: ${decision.error}` : ''}
-                  </pre>
-                  {(decision.allow_granted === 'once' || decision.allow_granted === 'always') && (
-                    <p className="mt-1.5 text-[11.5px] text-slate-500">
-                      {decision.allow_granted === 'once'
-                        ? 'Exemption granted — the same command auto-runs once next time.'
-                        : 'Exemption granted — the same command is allowed permanently.'}
-                    </p>
-                  )}
-                </>
-              ) : (
-                <p className="mt-2.5 text-[12px] text-slate-500">Approval not found (may have expired).</p>
-              )}
+              <div className="mt-2.5 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => onDecideApproval(a.approval_id, true)}
+                  className="cursor-pointer rounded-lg bg-emerald-600 px-3.5 py-1.5 text-[13px] font-semibold text-white transition-colors hover:bg-emerald-700"
+                >
+                  Approve
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onDecideApproval(a.approval_id, true, 'always')}
+                  className="cursor-pointer rounded-lg border border-emerald-600 bg-white px-3.5 py-1.5 text-[13px] font-semibold text-emerald-700 transition-colors hover:bg-emerald-50"
+                >
+                  Approve &amp; Always allow
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onDecideApproval(a.approval_id, false)}
+                  className="cursor-pointer rounded-lg border border-slate-300 bg-white px-3.5 py-1.5 text-[13px] font-semibold text-slate-600 transition-colors hover:bg-slate-100"
+                >
+                  Reject
+                </button>
+              </div>
             </div>
           )
         })}
