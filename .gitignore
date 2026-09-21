@@ -8,7 +8,7 @@ server.pid
 server.out
 server.err
 agent_state.db
-db/
+/backend/db/
 logs/
 tools_demo_test/
 tools_demo/
