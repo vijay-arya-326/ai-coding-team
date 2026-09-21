@@ -3,6 +3,63 @@ import { browseFolders, createFolder } from '../api'
 import type { FolderEntry } from '../types'
 
 const START_PATH_KEY = 'folderPickerStartPath'
+const HISTORY_KEY = 'folderPickerPathHistory'
+const HISTORY_MAX = 50
+
+interface PathVisit {
+  path: string
+  count: number
+  last: number
+}
+
+function readHistory(): PathVisit[] {
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY)
+    if (!raw) return []
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter(
+      (v): v is PathVisit => !!v && typeof (v as PathVisit).path === 'string'
+    )
+  } catch {
+    return []
+  }
+}
+
+function writeHistory(list: PathVisit[]) {
+  const sorted = [...list]
+    .sort((a, b) => b.count - a.count || b.last - a.last)
+    .slice(0, HISTORY_MAX)
+  try {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(sorted))
+  } catch {
+    // storage unavailable: ignore
+  }
+}
+
+function recordVisit(path: string) {
+  if (!path || path.startsWith('<')) return
+  const list = readHistory()
+  const idx = list.findIndex((v) => v.path === path)
+  if (idx >= 0) {
+    list[idx].count += 1
+    list[idx].last = Date.now()
+  } else {
+    list.push({ path, count: 1, last: Date.now() })
+  }
+  writeHistory(list)
+}
+
+function removeVisit(path: string) {
+  if (!path) return
+  writeHistory(readHistory().filter((v) => v.path !== path))
+}
+
+function topVisits(list: PathVisit[], n: number): PathVisit[] {
+  return [...list]
+    .sort((a, b) => b.count - a.count || b.last - a.last)
+    .slice(0, n)
+}
 
 interface FolderPickerProps {
   open: boolean
@@ -19,6 +76,7 @@ export default function FolderPicker({ open, onPick, onClose }: FolderPickerProp
   const [newName, setNewName] = useState('')
   const [creating, setCreating] = useState(false)
   const [goPath, setGoPath] = useState('')
+  const [recent, setRecent] = useState<PathVisit[]>([])
   const resumeRef = useRef(false)
 
   const load = useCallback(async (p: string) => {
@@ -30,8 +88,12 @@ export default function FolderPicker({ open, onPick, onClose }: FolderPickerProp
       setParent(result.parent)
       setEntries(result.entries)
       localStorage.setItem(START_PATH_KEY, result.path)
+      recordVisit(result.path)
+      setRecent(topVisits(readHistory(), 10))
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not list folders')
+      removeVisit(p)
+      setRecent(topVisits(readHistory(), 10))
       if (resumeRef.current) {
         resumeRef.current = false
         localStorage.removeItem(START_PATH_KEY)
@@ -45,6 +107,7 @@ export default function FolderPicker({ open, onPick, onClose }: FolderPickerProp
   useEffect(() => {
     if (!open) return
     resumeRef.current = true
+    setRecent(topVisits(readHistory(), 10))
     const start = localStorage.getItem(START_PATH_KEY)
     void load(start || '')
     return () => {
@@ -111,6 +174,25 @@ export default function FolderPicker({ open, onPick, onClose }: FolderPickerProp
         </div>
 
         <div className="flex items-center gap-2 border-b border-white/10 px-4 py-2">
+          <select
+            className="h-7 shrink-0 max-w-[32%] cursor-pointer rounded-md border border-white/10 bg-black/30 px-2 py-1 text-xs text-slate-200 outline-none focus:border-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
+            value=""
+            disabled={recent.length === 0}
+            title="Top accessed paths"
+            onChange={(e) => {
+              const v = e.target.value
+              if (v) void load(v)
+            }}
+          >
+            <option value="" disabled>
+              {recent.length === 0 ? 'No recent paths' : 'Recent…'}
+            </option>
+            {recent.map((r) => (
+              <option key={r.path} value={r.path}>
+                {r.path}
+              </option>
+            ))}
+          </select>
           <input
             className="min-w-0 flex-1 rounded-md border border-white/10 bg-black/30 px-3 py-1.5 text-xs text-slate-100 outline-none focus:border-indigo-500"
             placeholder="Paste a path to jump there, e.g. ~/projects or C:\sites"
