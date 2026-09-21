@@ -1,11 +1,15 @@
 import type {
   ApprovalDecision,
+  BrowseResult,
+  FolderEntry,
   RunSummary,
   StreamEvent,
   ThreadDetail,
   ThreadRuns,
   ThreadSummary,
   ThreadUpdate,
+  Workspace,
+  WorkspaceConfig,
 } from './types'
 
 const BASE = '/api'
@@ -63,6 +67,59 @@ export function stopChat(threadId: string): Promise<{ status: string }> {
     `${BASE}/threads/${encodeURIComponent(threadId)}/stop`,
     { method: 'POST' },
   )
+}
+
+export function fetchWorkspaces(): Promise<Workspace[]> {
+  return jsonFetch<Workspace[]>(`${BASE}/workspaces`)
+}
+
+export function createWorkspace(
+  name: string,
+  rootPath: string,
+): Promise<Workspace> {
+  return jsonFetch<Workspace>(`${BASE}/workspaces`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, root_path: rootPath }),
+  })
+}
+
+export function updateWorkspace(
+  workspaceId: string,
+  name: string,
+  config: WorkspaceConfig,
+): Promise<Workspace> {
+  return jsonFetch<Workspace>(`${BASE}/workspaces/${encodeURIComponent(workspaceId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, config }),
+  })
+}
+
+export function deleteWorkspace(workspaceId: string): Promise<void> {
+  return jsonFetch<void>(`${BASE}/workspaces/${encodeURIComponent(workspaceId)}`, {
+    method: 'DELETE',
+  })
+}
+
+export function activateWorkspace(workspaceId: string): Promise<Workspace> {
+  return jsonFetch<Workspace>(
+    `${BASE}/workspaces/${encodeURIComponent(workspaceId)}/activate`,
+    { method: 'POST' },
+  )
+}
+
+export function browseFolders(path?: string): Promise<BrowseResult> {
+  const qs = path ? `?path=${encodeURIComponent(path)}` : ''
+  return jsonFetch<BrowseResult>(`${BASE}/workspaces/browse${qs}`)
+}
+
+export function createFolder(parent: string, name: string): Promise<FolderEntry> {
+  return jsonFetch<FolderEntry>(`${BASE}/workspaces/mkdir`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ parent, name }),
+  })
 }
 
 export function formatTimestamp(iso: string | null): string {

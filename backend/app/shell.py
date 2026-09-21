@@ -34,27 +34,27 @@ def normalize_command(command: str) -> str:
 def classify_command(command: str) -> bool:
     """Return True when the command may run without approval.
 
-    A safe whitelist match is not enough: a command that also contains an unsafe
-    marker falls through to the exemption check, then to the marker check and is
-    rejected unless explicitly granted. Granted exemptions (permanent or one-time)
-    bypass everything; the one-time exemption is consumed after a single use.
+    The safe whitelist (built-in + the active workspace's extra safe commands)
+    still defers to any unsafe marker present. Granted exemptions (permanent or
+    one-time) bypass everything; a one-time exemption is consumed after use.
     """
-    from .approvals import ONE_TIME_ALLOWED, PERMANENT_ALLOWED
+    from .approvals import current_policy
 
+    policy = current_policy()
     cmd = normalize_command(command)
     if not cmd:
         return False
-    for prefix in SAFE_COMMANDS:
+    for prefix in policy.safe:
         if cmd == prefix or cmd.startswith(prefix + " "):
-            if not any(marker in cmd for marker in UNSAFE_MARKERS):
+            if not any(marker in cmd for marker in policy.unsafe):
                 return True
             break
-    if cmd in PERMANENT_ALLOWED:
+    if cmd in policy.permanent:
         return True
-    if cmd in ONE_TIME_ALLOWED:
-        ONE_TIME_ALLOWED.discard(cmd)
+    if cmd in policy.one_time:
+        policy.one_time.discard(cmd)
         return True
-    for marker in UNSAFE_MARKERS:
+    for marker in policy.unsafe:
         if marker in cmd:
             return False
     return False

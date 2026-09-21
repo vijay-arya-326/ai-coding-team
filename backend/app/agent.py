@@ -46,7 +46,9 @@ from .persistence import (  # noqa: F401
     record_message,
     record_runs,
     runs_summary,
+    thread_exists,
     thread_runs,
+    thread_workspace_id,
     update_thread_meta,
 )
 from .shell import (  # noqa: F401
@@ -65,4 +67,21 @@ from .tools import (  # noqa: F401
     edit_file,
     rename_file,
     run_shell_command,
+)
+from .workspace import (  # noqa: F401
+    DEFAULT_WORKSPACE_ID,
+    WORKSPACE_CONFIG_FILE,
+    Workspace,
+    activate_workspace,
+    create_workspace,
+    default_workspace,
+    delete_workspace,
+    get_current,
+    get_workspace,
+    init_current,
+    list_workspaces,
+    save_workspace_config,
+    set_current,
+    update_workspace,
+    workspace_by_root,
 )

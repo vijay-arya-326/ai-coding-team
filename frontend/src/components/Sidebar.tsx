@@ -1,17 +1,19 @@
 import { formatTimestamp } from '../api'
-import type { RunSummary, ThreadSummary } from '../types'
+import type { RunSummary, ThreadSummary, Workspace } from '../types'
 import RunsList from './RunsList'
+import WorkspaceSelector from './WorkspaceSelector'
 
 interface SidebarProps {
   threads: ThreadSummary[]
   activeId: string | null
   disabled: boolean
   showArchived: boolean
-  view: 'chat' | 'runs'
+  view: 'chat' | 'runs' | 'workspaces'
   runs: RunSummary[]
   runsLoading: boolean
   selectedRunId: string | null
-  onViewChange: (view: 'chat' | 'runs') => void
+  workspaces: Workspace[]
+  onViewChange: (view: 'chat' | 'runs' | 'workspaces') => void
   onSelectRun: (threadId: string) => void
   onToggleArchived: () => void
   onSelect: (threadId: string) => void
@@ -19,6 +21,7 @@ interface SidebarProps {
   onRename: (threadId: string) => void
   onArchive: (threadId: string) => void
   onDelete: (threadId: string) => void
+  onWorkspaceChange: (workspaceId: string) => void
 }
 
 function threadLabel(t: ThreadSummary): string {
@@ -70,6 +73,7 @@ export default function Sidebar({
   runs,
   runsLoading,
   selectedRunId,
+  workspaces,
   onViewChange,
   onSelectRun,
   onToggleArchived,
@@ -78,10 +82,17 @@ export default function Sidebar({
   onRename,
   onArchive,
   onDelete,
+  onWorkspaceChange,
 }: SidebarProps) {
-  const visible = threads.filter((t) => t.archived === showArchived)
-  const activeCount = threads.filter((t) => !t.archived).length
-  const archivedCount = threads.length - activeCount
+  const activeWsId = workspaces.find((w) => w.active)?.id ?? 'default'
+  const visible = threads.filter(
+    (t) => (t.workspace_id ?? 'default') === activeWsId && t.archived === showArchived,
+  )
+  const hasOtherWsThreads = threads.some(
+    (t) => (t.workspace_id ?? 'default') !== activeWsId,
+  )
+  const activeCount = visible.filter((t) => !t.archived).length
+  const archivedCount = visible.length - activeCount
 
   return (
     <aside className="flex w-80 shrink-0 flex-col bg-[#1f2430] text-slate-200">
@@ -108,7 +119,25 @@ export default function Sidebar({
           >
             ▤ Runs
           </button>
+          <button
+            className={`flex-1 cursor-pointer rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors ${
+              view === 'workspaces'
+                ? 'bg-indigo-500/25 text-white'
+                : 'text-slate-300 hover:bg-white/5'
+            }`}
+            onClick={() => onViewChange('workspaces')}
+          >
+            ▦ Spaces
+          </button>
         </div>
+        {view !== 'workspaces' && (
+          <WorkspaceSelector
+            workspaces={workspaces}
+            activeId={workspaces.find((w) => w.active)?.id ?? activeId}
+            disabled={disabled}
+            onChange={onWorkspaceChange}
+          />
+        )}
         <button
           className="cursor-pointer rounded-lg bg-indigo-500 px-3 py-2.5 text-sm font-medium text-white transition-colors hover:bg-indigo-600 disabled:cursor-not-allowed disabled:opacity-60"
           onClick={onNew}
@@ -151,13 +180,20 @@ export default function Sidebar({
             loading={runsLoading}
             onSelect={onSelectRun}
           />
+        ) : view === 'workspaces' ? (
+          <p className="p-3 text-[13px] leading-relaxed text-slate-400">
+            Manage workspaces in the main panel. Each workspace has its own root
+            folder, command policy, and private chats.
+          </p>
         ) : (
           <>
             {visible.length === 0 && (
               <p className="p-3 text-[13px] leading-relaxed text-slate-400">
-                {showArchived
-                  ? 'No archived conversations.'
-                  : 'No conversations yet. Send a message to start one.'}
+                {hasOtherWsThreads
+                  ? 'No conversations in this workspace yet. Send a message to start one.'
+                  : showArchived
+                    ? 'No archived conversations.'
+                    : 'No conversations yet. Send a message to start one.'}
               </p>
             )}
             {visible.map((thread) => (

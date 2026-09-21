@@ -12,7 +12,7 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
-from .config import PREVIEW_LIMIT
+from .config import DEFAULT_WORKSPACE_ID, PREVIEW_LIMIT
 from .db import close_checkpointer as _close_db
 from .db import meta_conn as _meta_conn
 from .db import open_checkpointer as _open_checkpointer
@@ -24,6 +24,11 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def effective_workspace_id(ws_id: str | None) -> str:
+    """Untagged/legacy threads belong to the default workspace."""
+    return ws_id or DEFAULT_WORKSPACE_ID
+
+
 # Re-exported for callers that built on the old flat surface.
 close_checkpointer = _close_db
 meta_conn = _meta_conn
@@ -32,17 +37,40 @@ open_checkpointer = _open_checkpointer
 __all__ = ["close_checkpointer", "open_checkpointer"]
 
 
-async def ensure_thread_meta(thread_id: str, first_user_text: str | None) -> None:
+async def ensure_thread_meta(
+    thread_id: str, first_user_text: str | None, workspace_id: str | None = None
+) -> None:
     """Create a metadata row when a thread first appears; title defaults to first message."""
     conn = await _meta_conn()
     now = _now()
     title = first_user_text.strip()[:80] if first_user_text and first_user_text.strip() else None
     await conn.execute(
         "INSERT OR IGNORE INTO thread_meta"
-        " (thread_id, title, archived, created_at, updated_at) VALUES (?, ?, 0, ?, ?)",
-        (thread_id, title, now, now),
+        " (thread_id, title, archived, created_at, updated_at, workspace_id)"
+        " VALUES (?, ?, 0, ?, ?, ?)",
+        (thread_id, title, now, now, workspace_id),
     )
     await conn.commit()
+
+
+async def thread_workspace_id(thread_id: str) -> str | None:
+    """Return the workspace a thread belongs to (None when unknown)."""
+    conn = await _meta_conn()
+    cur = await conn.execute(
+        "SELECT workspace_id FROM thread_meta WHERE thread_id = ?", (thread_id,)
+    )
+    row = await cur.fetchone()
+    return row[0] if row else None
+
+
+async def thread_exists(thread_id: str) -> bool:
+    """True when the thread has any persisted conversation state (checkpoint)."""
+    saver = await open_checkpointer()
+    cur = await saver.conn.execute(
+        "SELECT 1 FROM checkpoints WHERE thread_id = ? LIMIT 1", (thread_id,)
+    )
+    row = await cur.fetchone()
+    return row is not None
 
 
 async def record_message(
@@ -81,7 +109,9 @@ def _iso_delta_ms(started_at: str | None, ended_at: str | None) -> float | None:
         return None
 
 
-async def record_runs(thread_id: str, runs: list[dict[str, Any]]) -> None:
+async def record_runs(
+    thread_id: str, runs: list[dict[str, Any]], workspace_id: str | None = None
+) -> None:
     """Persist one chat call's model rounds with token usage and tool communication."""
     if not runs:
         return
@@ -96,7 +126,7 @@ async def record_runs(thread_id: str, runs: list[dict[str, Any]]) -> None:
         await conn.execute(
             "INSERT INTO thread_runs (thread_id, run_index, started_at, ended_at,"
             " input_tokens, output_tokens, total_tokens, input_preview, output_preview,"
-            " tools_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " tools_json, workspace_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 thread_id,
                 start_index + i,
@@ -108,6 +138,7 @@ async def record_runs(thread_id: str, runs: list[dict[str, Any]]) -> None:
                 (run.get("input_preview") or "")[:PREVIEW_LIMIT],
                 (run.get("output_preview") or "")[:PREVIEW_LIMIT],
                 json.dumps(run.get("tools") or [], ensure_ascii=False),
+                workspace_id,
             ),
         )
     await conn.commit()
@@ -126,6 +157,7 @@ def _run_to_dict(row: tuple) -> dict[str, Any]:
         input_preview,
         output_preview,
         tools_json,
+        workspace_id,
     ) = row
     tools = json.loads(tools_json) if tools_json else []
     return {
@@ -139,19 +171,27 @@ def _run_to_dict(row: tuple) -> dict[str, Any]:
         "input_preview": input_preview,
         "output_preview": output_preview,
         "tools": tools,
+        "workspace_id": workspace_id,
     }
 
 
-async def thread_runs(thread_id: str) -> dict[str, Any] | None:
-    """Return one thread's model-round runs (token usage + tool communication)."""
+async def thread_runs(thread_id: str, workspace_id: str | None = None) -> dict[str, Any] | None:
+    """Return one thread's model-round runs (token usage + tool communication).
+
+    When workspace_id is given, threads belonging to another workspace are hidden.
+    """
     conn = await _meta_conn()
+    if workspace_id is not None:
+        _m_title, _m_archived, meta_ws = await _load_thread_meta(thread_id)
+        if effective_workspace_id(workspace_id) != effective_workspace_id(meta_ws):
+            return None
     cur = await conn.execute(
         "SELECT * FROM thread_runs WHERE thread_id = ? ORDER BY run_index", (thread_id,)
     )
     rows = await cur.fetchall()
     if not rows:
         return None
-    title, archived = await _load_thread_meta(thread_id)
+    title, archived, workspace_id = await _load_thread_meta(thread_id)
     runs = [_run_to_dict(r) for r in rows]
     totals = {
         "input_tokens": sum(r["input_tokens"] or 0 for r in runs),
@@ -167,16 +207,21 @@ async def thread_runs(thread_id: str) -> dict[str, Any] | None:
         "thread_id": thread_id,
         "title": title,
         "archived": archived,
+        "workspace_id": workspace_id,
         "run_count": len(runs),
         "totals": totals,
         "runs": runs,
     }
 
 
-async def runs_summary() -> list[dict[str, Any]]:
-    """Summarise run usage per thread, newest first."""
+async def runs_summary(workspace_id: str | None = None) -> list[dict[str, Any]]:
+    """Summarise run usage per thread (scoped to a workspace), newest first."""
     conn = await _meta_conn()
-    cur = await conn.execute("SELECT * FROM thread_runs ORDER BY id")
+    eff = effective_workspace_id(workspace_id)
+    cur = await conn.execute(
+        "SELECT * FROM thread_runs WHERE COALESCE(workspace_id, ?) = ? ORDER BY id",
+        (DEFAULT_WORKSPACE_ID, eff),
+    )
     rows = await cur.fetchall()
     by_thread: dict[str, dict[str, Any]] = {}
     for row in rows:
@@ -192,6 +237,7 @@ async def runs_summary() -> list[dict[str, Any]]:
                 "total_tokens": 0,
                 "tool_count": 0,
                 "last_run_at": None,
+                "workspace_id": run["workspace_id"],
             },
         )
         agg["run_count"] += 1
@@ -205,21 +251,23 @@ async def runs_summary() -> list[dict[str, Any]]:
             agg["last_run_at"] = run["ended_at"]
     result = list(by_thread.values())
     for thread_id, agg in by_thread.items():
-        title, _archived = await _load_thread_meta(thread_id)
+        title, _archived, ws_id = await _load_thread_meta(thread_id)
         agg["title"] = title
+        agg["workspace_id"] = ws_id or agg["workspace_id"]
     result.sort(key=lambda a: a["last_run_at"] or "", reverse=True)
     return result
 
 
-async def _load_thread_meta(thread_id: str) -> tuple[str | None, bool]:
+async def _load_thread_meta(thread_id: str) -> tuple[str | None, bool, str | None]:
     conn = await _meta_conn()
     cur = await conn.execute(
-        "SELECT title, archived FROM thread_meta WHERE thread_id = ?", (thread_id,)
+        "SELECT title, archived, workspace_id FROM thread_meta WHERE thread_id = ?",
+        (thread_id,),
     )
     row = await cur.fetchone()
     if row is None:
-        return None, False
-    return row[0], bool(row[1])
+        return None, False, None
+    return row[0], bool(row[1]), row[2]
 
 
 async def update_thread_meta(
@@ -247,8 +295,13 @@ async def update_thread_meta(
             (int(archived), now, thread_id),
         )
     await conn.commit()
-    title, archived = await _load_thread_meta(thread_id)
-    return {"thread_id": thread_id, "title": title, "archived": archived}
+    title, archived, workspace_id = await _load_thread_meta(thread_id)
+    return {
+        "thread_id": thread_id,
+        "title": title,
+        "archived": archived,
+        "workspace_id": workspace_id,
+    }
 
 
 async def _stored_messages(thread_id: str) -> list[dict[str, Any]] | None:
@@ -313,17 +366,26 @@ async def _thread_created_at(saver, thread_id: str) -> str | None:
     return _checkpoint_ts(row[0] if row else None)
 
 
-async def list_threads(limit: int = 100) -> list[dict[str, Any]]:
-    """List threads, newest first, with title, archived flag, and last-message preview.
+async def list_threads(limit: int = 100, workspace_id: str | None = None) -> list[dict[str, Any]]:
+    """List threads of one workspace (default when omitted), newest first.
 
     Threads are enumerated as distinct rows (one per thread_id) so that thread
-    count, not checkpoint-row count, is what the limit bounds.
+    count, not checkpoint-row count, is what the limit bounds. Untagged/legacy
+    threads belong to the default workspace.
     """
     saver = await open_checkpointer()
+    eff = effective_workspace_id(workspace_id)
+    if eff == DEFAULT_WORKSPACE_ID:
+        where = "WHERE tm.thread_id IS NULL OR COALESCE(tm.workspace_id, ?) = ?"
+        params: tuple = (DEFAULT_WORKSPACE_ID, eff, limit)
+    else:
+        where = "WHERE tm.thread_id IS NOT NULL AND tm.workspace_id = ?"
+        params = (eff, limit)
     cur = await saver.conn.execute(
-        "SELECT thread_id, MAX(checkpoint_id) AS cid FROM checkpoints"
-        " GROUP BY thread_id ORDER BY cid DESC LIMIT ?",
-        (limit,),
+        "SELECT c.thread_id, MAX(c.checkpoint_id) AS cid"
+        " FROM checkpoints c LEFT JOIN thread_meta tm ON tm.thread_id = c.thread_id"
+        f" {where} GROUP BY c.thread_id ORDER BY cid DESC LIMIT ?",
+        params,
     )
     rows = await cur.fetchall()
     threads: list[dict[str, Any]] = []
@@ -336,11 +398,12 @@ async def list_threads(limit: int = 100) -> list[dict[str, Any]]:
         messages = (tup.checkpoint or {}).get("channel_values", {}).get("messages", [])
         messages = [m for m in messages if isinstance(m, BaseMessage)]
         first_user = next((m for m in messages if isinstance(m, HumanMessage)), None)
-        title, archived = await _load_thread_meta(thread_id)
+        title, archived, workspace_id = await _load_thread_meta(thread_id)
         threads.append({
             "thread_id": thread_id,
             "title": title,
             "archived": archived,
+            "workspace_id": workspace_id,
             "message_count": len(messages),
             "created_at": await _thread_created_at(saver, thread_id),
             "updated_at": _checkpoint_ts(
@@ -354,15 +417,22 @@ async def list_threads(limit: int = 100) -> list[dict[str, Any]]:
     return threads
 
 
-async def get_thread(thread_id: str) -> dict[str, Any] | None:
-    """Return one thread's message history (with timestamps), or None if missing."""
+async def get_thread(thread_id: str, workspace_id: str | None = None) -> dict[str, Any] | None:
+    """Return one thread's message history (with timestamps), or None.
+
+    When workspace_id is given, threads belonging to another workspace are hidden.
+    """
     saver = await open_checkpointer()
     tup = await saver.aget_tuple(
         {"configurable": {"thread_id": thread_id}}
     )
     if tup is None:
         return None
-    title, archived = await _load_thread_meta(thread_id)
+    title, archived, workspace_id_from_meta = await _load_thread_meta(thread_id)
+    if workspace_id is not None and effective_workspace_id(workspace_id) != effective_workspace_id(
+        workspace_id_from_meta
+    ):
+        return None
     messages = await _stored_messages(thread_id)
     if messages is None:
         raw = (tup.checkpoint or {}).get("channel_values", {}).get("messages", [])
@@ -375,6 +445,7 @@ async def get_thread(thread_id: str) -> dict[str, Any] | None:
         "thread_id": thread_id,
         "title": title,
         "archived": archived,
+        "workspace_id": workspace_id,
         "created_at": await _thread_created_at(saver, thread_id),
         "updated_at": _checkpoint_ts(
             (tup.config or {}).get("configurable", {}).get("checkpoint_id")

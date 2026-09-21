@@ -19,6 +19,10 @@ ALLOWED_COMMANDS_FILE = os.getenv(
     "ALLOWED_COMMANDS_FILE", os.path.join(BASE_DIR, "allowed_commands.json")
 )
 
+# Workspace configuration.
+DEFAULT_WORKSPACE_ID = os.getenv("DEFAULT_WORKSPACE_ID", "default")
+WORKSPACE_CONFIG_FILE = os.getenv("WORKSPACE_CONFIG_FILE", ".local_agent_workspace")
+
 SYSTEM_PROMPT = (
     "You are a helpful assistant running on llama3.1:8b. Be concise and accurate. "
     "Use the tools available to you when they help answer the user's question."

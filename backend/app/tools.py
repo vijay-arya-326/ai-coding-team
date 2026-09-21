@@ -1,9 +1,10 @@
 """Agent tools: calculator, filesystem operations, and shell execution.
 
-File paths supplied by the model are resolved against PROJECT_ROOT (POSIX-style
-root paths count as project-root relative) and paths escaping the root are
-rejected. Destructive operations are auto-run when an exemption exists, and
-otherwise register a pending approval instead of running.
+File paths supplied by the model are resolved against the active workspace's
+root (POSIX-style root paths count as workspace-root relative) and paths
+escaping the workspace root are rejected. Destructive operations are auto-run
+when an exemption exists for the pattern's workspace, and otherwise register a
+pending approval instead of running.
 """
 
 import os
@@ -11,30 +12,33 @@ import shutil
 
 from langchain_core.tools import tool
 
+from . import workspace as ws_mod
 from .approvals import _pending_approval, consume_exemption
-from .config import PROJECT_ROOT, SHELL_TIMEOUT
+from .config import SHELL_TIMEOUT
 from .shell import classify_command, run_shell
 
 
 def resolve_project_path(raw: str) -> str:
-    """Resolve a model-supplied path to an absolute path inside PROJECT_ROOT.
+    """Resolve a model-supplied path against the active workspace root.
 
-    POSIX-style root paths like '/tools_demo' are treated as project-root relative
-    (they come from POSIX-trained models). Paths escaping PROJECT_ROOT are rejected.
+    POSIX-style root paths like '/tools_demo' are treated as workspace-root
+    relative (they come from POSIX-trained models). Paths escaping the
+    workspace root are rejected.
     """
+    root = ws_mod.get_current().root_path
     raw = os.path.expandvars(os.path.expanduser((raw or "").strip().strip('"')))
     if not raw:
         raise ValueError("empty path")
     if raw.startswith("/") and not raw.startswith("//"):
-        resolved = os.path.normpath(os.path.join(PROJECT_ROOT, raw.lstrip("/")))
+        resolved = os.path.normpath(os.path.join(root, raw.lstrip("/")))
     elif os.path.isabs(raw):
         resolved = os.path.normpath(raw)
     else:
-        resolved = os.path.normpath(os.path.join(PROJECT_ROOT, raw))
+        resolved = os.path.normpath(os.path.join(root, raw))
     resolved = os.path.abspath(resolved)
-    root = os.path.abspath(PROJECT_ROOT)
+    root = os.path.abspath(root)
     if resolved != root and os.path.commonpath([resolved, root]) != root:
-        raise ValueError(f"path resolves outside the project root: {raw}")
+        raise ValueError(f"path resolves outside the workspace root: {raw}")
     return resolved
 
 
@@ -154,16 +158,17 @@ def delete_folder(path: str) -> str:
 
 @tool
 def run_shell_command(command: str) -> str:
-    """Run a shell command in the project root. Read-only commands run immediately; anything else requires explicit user approval."""
+    """Run a shell command in the active workspace root. Read-only commands run immediately; anything else requires explicit user approval."""
+    cwd = ws_mod.get_current().root_path
     if not classify_command(command):
         approval_id = _pending_approval(
             "shell",
-            {"command": command, "cwd": PROJECT_ROOT},
+            {"command": command, "cwd": cwd},
             f"Run shell command `{command}`?",
         )
         return f"ACTION_REQUIRES_APPROVAL:{approval_id}"
     try:
-        code, out = run_shell(command, PROJECT_ROOT, timeout=SHELL_TIMEOUT)
+        code, out = run_shell(command, cwd, timeout=SHELL_TIMEOUT)
         return f"exit {code}\n{out}"
     except TimeoutError:
         return "ERROR: command timed out"

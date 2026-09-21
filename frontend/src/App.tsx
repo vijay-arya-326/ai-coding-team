@@ -1,17 +1,28 @@
 import { useCallback, useEffect, useState } from 'react'
-import { deleteThread, fetchRunsSummary, fetchThreads, updateThread } from './api'
+import {
+  activateWorkspace,
+  createWorkspace,
+  deleteThread,
+  deleteWorkspace,
+  fetchRunsSummary,
+  fetchThreads,
+  fetchWorkspaces,
+  updateThread,
+  updateWorkspace,
+} from './api'
 import ChatView from './components/ChatView'
 import ConfirmDialog from './components/ConfirmDialog'
 import RenameDialog from './components/RenameDialog'
 import RunsView from './components/RunsView'
 import Sidebar from './components/Sidebar'
 import Toasts from './components/Toasts'
+import WorkspacesView from './components/WorkspacesView'
 import { useChatSession } from './hooks/useChatSession'
 import { useToasts } from './hooks/useToasts'
-import type { RunSummary, ThreadSummary } from './types'
+import type { RunSummary, ThreadSummary, Workspace, WorkspaceConfig } from './types'
 
 export default function App() {
-  const [view, setView] = useState<'chat' | 'runs'>('chat')
+  const [view, setView] = useState<'chat' | 'runs' | 'workspaces'>('chat')
   const [threads, setThreads] = useState<ThreadSummary[]>([])
   const [showArchived, setShowArchived] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<string | null>(null)
@@ -19,6 +30,7 @@ export default function App() {
   const [runSummaries, setRunSummaries] = useState<RunSummary[]>([])
   const [runsLoading, setRunsLoading] = useState(true)
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([])
 
   const { toasts, notify, dismiss } = useToasts()
 
@@ -31,9 +43,18 @@ export default function App() {
     }
   }, [])
 
+  const refreshWorkspaces = useCallback(async () => {
+    try {
+      setWorkspaces(await fetchWorkspaces())
+    } catch {
+      /* keep previous list */
+    }
+  }, [])
+
   useEffect(() => {
     void refreshThreads()
-  }, [refreshThreads])
+    void refreshWorkspaces()
+  }, [refreshThreads, refreshWorkspaces])
 
 const chat = useChatSession({
     notify,
@@ -42,11 +63,15 @@ const chat = useChatSession({
   })
   const { activeId, newChat, reportError } = chat
 
-  const refreshRuns = useCallback(async () => {
+const refreshRuns = useCallback(async (reset = false) => {
     try {
       const data = await fetchRunsSummary()
       setRunSummaries(data)
-      setSelectedRunId((prev) => prev ?? data[0]?.thread_id ?? null)
+      setSelectedRunId((prev) =>
+        reset
+          ? (data[0]?.thread_id ?? null)
+          : prev ?? data[0]?.thread_id ?? null,
+      )
     } catch {
       /* keep previous list */
     } finally {
@@ -58,12 +83,74 @@ const chat = useChatSession({
     void refreshRuns()
   }, [refreshRuns])
 
-  const handleViewChange = useCallback(
-    (v: 'chat' | 'runs') => {
+const handleViewChange = useCallback(
+    (v: 'chat' | 'runs' | 'workspaces') => {
       setView(v)
       if (v === 'runs') void refreshRuns()
+      if (v === 'workspaces') void refreshWorkspaces()
     },
-    [refreshRuns],
+    [refreshRuns, refreshWorkspaces],
+  )
+
+  const handleActivateWorkspace = useCallback(
+    async (workspaceId: string) => {
+      if (workspaceId === activeId && workspaces.find((w) => w.id === workspaceId)?.active) return
+      try {
+        await activateWorkspace(workspaceId)
+        await refreshWorkspaces()
+        await refreshThreads()
+        await refreshRuns(true)
+        newChat()
+        notify('Workspace activated')
+      } catch (err) {
+        reportError(err instanceof Error ? err.message : 'Failed to activate workspace')
+        notify('Failed to activate workspace', 'error')
+      }
+    },
+    [activeId, workspaces, refreshWorkspaces, refreshThreads, refreshRuns, newChat, notify, reportError],
+  )
+
+  const handleCreateWorkspace = useCallback(
+    async (name: string, rootPath: string) => {
+      try {
+        await createWorkspace(name, rootPath)
+        await refreshWorkspaces()
+        notify('Workspace created')
+      } catch (err) {
+        reportError(err instanceof Error ? err.message : 'Failed to create workspace')
+        notify('Failed to create workspace', 'error')
+      }
+    },
+    [refreshWorkspaces, notify, reportError],
+  )
+
+  const handleUpdateWorkspace = useCallback(
+    async (workspaceId: string, name: string, config: WorkspaceConfig) => {
+      try {
+        await updateWorkspace(workspaceId, name, config)
+        await refreshWorkspaces()
+        notify('Workspace saved')
+      } catch (err) {
+        reportError(err instanceof Error ? err.message : 'Failed to update workspace')
+        notify('Failed to update workspace', 'error')
+      }
+    },
+    [refreshWorkspaces, notify, reportError],
+  )
+
+  const handleDeleteWorkspace = useCallback(
+    async (workspaceId: string) => {
+      try {
+        await deleteWorkspace(workspaceId)
+        await refreshWorkspaces()
+        await refreshThreads()
+        notify('Workspace deleted')
+      } catch (err) {
+        reportError(err instanceof Error ? err.message : 'Failed to delete workspace')
+        notify('Failed to delete workspace', 'error')
+      }
+    },
+    [refreshWorkspaces, refreshThreads, notify, reportError],
   )
 
   const threadLabel = useCallback(
@@ -138,7 +225,7 @@ await deleteThread(threadId)
   return (
     <div className="flex h-screen">
       <Toasts toasts={toasts} onDismiss={dismiss} />
-      <Sidebar
+<Sidebar
         threads={threads}
         activeId={chat.activeId}
         disabled={chat.streaming}
@@ -147,6 +234,7 @@ await deleteThread(threadId)
         runs={runSummaries}
         runsLoading={runsLoading}
         selectedRunId={selectedRunId}
+        workspaces={workspaces}
         onViewChange={handleViewChange}
         onSelectRun={setSelectedRunId}
         onToggleArchived={() => setShowArchived((v) => !v)}
@@ -155,8 +243,18 @@ await deleteThread(threadId)
         onRename={handleRename}
         onArchive={(id) => void toggleArchive(id)}
         onDelete={(id) => void handleDelete(id)}
+        onWorkspaceChange={(id) => void handleActivateWorkspace(id)}
       />
-      {view === 'runs' ? (
+      {view === 'workspaces' ? (
+        <WorkspacesView
+          workspaces={workspaces}
+          streaming={chat.streaming}
+          onCreate={(name, root) => handleCreateWorkspace(name, root)}
+          onActivate={(id) => handleActivateWorkspace(id)}
+          onUpdate={(id, name, config) => handleUpdateWorkspace(id, name, config)}
+          onDelete={(id) => handleDeleteWorkspace(id)}
+        />
+      ) : view === 'runs' ? (
         <RunsView summaries={runSummaries} selectedId={selectedRunId} />
       ) : (
         <ChatView

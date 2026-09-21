@@ -6,12 +6,26 @@ ALTER TABLE migrations when the table already exists.
 
 
 SCHEMA: dict[str, list[str]] = {
+    "workspaces": [
+        "id TEXT PRIMARY KEY",
+        "name TEXT NOT NULL",
+        "root_path TEXT NOT NULL",
+        "is_default INTEGER NOT NULL DEFAULT 0",
+        "config_json TEXT",
+        "created_at TEXT NOT NULL",
+        "updated_at TEXT NOT NULL",
+    ],
+    "settings": [
+        "key TEXT PRIMARY KEY",
+        "value TEXT",
+    ],
     "thread_meta": [
         "thread_id TEXT PRIMARY KEY",
         "title TEXT",
         "archived INTEGER NOT NULL DEFAULT 0",
         "created_at TEXT NOT NULL",
         "updated_at TEXT NOT NULL",
+        "workspace_id TEXT",
     ],
     "thread_messages": [
         "id INTEGER PRIMARY KEY AUTOINCREMENT",
@@ -34,6 +48,7 @@ SCHEMA: dict[str, list[str]] = {
         "input_preview TEXT",
         "output_preview TEXT",
         "tools_json TEXT",
+        "workspace_id TEXT",
     ],
 }
 
@@ -42,6 +57,12 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
     "thread_messages": [
         ("stream_started_at", "TEXT"),
         ("stream_elapsed_ms", "INTEGER"),
+    ],
+    "thread_meta": [
+        ("workspace_id", "TEXT"),
+    ],
+    "thread_runs": [
+        ("workspace_id", "TEXT"),
     ],
 }
 

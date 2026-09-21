@@ -10,6 +10,7 @@ export interface ThreadSummary {
   thread_id: string
   title: string | null
   archived: boolean
+  workspace_id: string | null
   message_count: number
   created_at: string | null
   updated_at: string | null
@@ -21,6 +22,7 @@ export interface ThreadDetail {
   thread_id: string
   title: string | null
   archived: boolean
+  workspace_id: string | null
   created_at: string | null
   updated_at: string | null
   messages: MessageDto[]
@@ -104,12 +106,44 @@ export interface RunSummary {
   total_tokens: number
   tool_count: number
   last_run_at: string | null
+  workspace_id: string | null
+}
+
+export interface WorkspaceConfig {
+  safe_commands?: string[]
+  unsafe_commands?: string[]
+  allowed_commands?: string[]
+  exemptions?: string[]
+}
+
+export interface Workspace {
+  id: string
+  name: string
+  root_path: string
+  is_default: boolean
+  config: WorkspaceConfig
+  created_at: string | null
+  updated_at: string | null
+  active: boolean
+}
+
+export interface FolderEntry {
+  name: string
+  path: string
+}
+
+export interface BrowseResult {
+  path: string
+  name: string
+  parent: string | null
+  entries: FolderEntry[]
 }
 
 export interface ThreadRuns {
   thread_id: string
   title: string | null
   archived: boolean
+  workspace_id: string | null
   run_count: number
   totals: RunTotals
   runs: RunRound[]
