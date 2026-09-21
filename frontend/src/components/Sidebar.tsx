@@ -1,5 +1,7 @@
+import { useState } from 'react'
 import { formatTimestamp } from '../api'
 import type { RunSummary, ThreadSummary, Workspace } from '../types'
+import FolderPicker from './FolderPicker'
 import RunsList from './RunsList'
 import WorkspaceSelector from './WorkspaceSelector'
 
@@ -13,6 +15,7 @@ interface SidebarProps {
   runsLoading: boolean
   selectedRunId: string | null
   workspaces: Workspace[]
+  selectedWorkspaceId: string | null
   onViewChange: (view: 'chat' | 'runs' | 'workspaces') => void
   onSelectRun: (threadId: string) => void
   onToggleArchived: () => void
@@ -22,6 +25,10 @@ interface SidebarProps {
   onArchive: (threadId: string) => void
   onDelete: (threadId: string) => void
   onWorkspaceChange: (workspaceId: string) => void
+  onSelectWorkspace: (workspaceId: string) => void
+  onCreateWorkspace: (name: string, rootPath: string) => Promise<void>
+  onActivateWorkspace: (workspaceId: string) => Promise<void>
+  onDeleteWorkspace: (workspaceId: string) => Promise<void>
 }
 
 function threadLabel(t: ThreadSummary): string {
@@ -74,6 +81,7 @@ export default function Sidebar({
   runsLoading,
   selectedRunId,
   workspaces,
+  selectedWorkspaceId,
   onViewChange,
   onSelectRun,
   onToggleArchived,
@@ -83,8 +91,22 @@ export default function Sidebar({
   onArchive,
   onDelete,
   onWorkspaceChange,
+  onSelectWorkspace,
+  onCreateWorkspace,
+  onActivateWorkspace,
+  onDeleteWorkspace,
 }: SidebarProps) {
+  const [wsNewName, setWsNewName] = useState('')
+  const [wsNewRoot, setWsNewRoot] = useState('')
+  const [wsCreating, setWsCreating] = useState(false)
+  const [wsPickerOpen, setWsPickerOpen] = useState(false)
   const activeWsId = workspaces.find((w) => w.active)?.id ?? 'default'
+  const selectedWsId =
+    workspaces.find((w) => w.id === selectedWorkspaceId)?.id ??
+    workspaces.find((w) => w.active)?.id ??
+    workspaces.find((w) => w.is_default)?.id ??
+    workspaces[0]?.id ??
+    null
   const visible = threads.filter(
     (t) => (t.workspace_id ?? 'default') === activeWsId && t.archived === showArchived,
   )
@@ -138,14 +160,16 @@ export default function Sidebar({
             onChange={onWorkspaceChange}
           />
         )}
-        <button
-          className="cursor-pointer rounded-lg bg-indigo-500 px-3 py-2.5 text-sm font-medium text-white transition-colors hover:bg-indigo-600 disabled:cursor-not-allowed disabled:opacity-60"
-          onClick={onNew}
-          disabled={disabled}
-          title="Start a new conversation"
-        >
-          + New chat
-        </button>
+        {view !== 'workspaces' && (
+          <button
+            className="cursor-pointer rounded-lg bg-indigo-500 px-3 py-2.5 text-sm font-medium text-white transition-colors hover:bg-indigo-600 disabled:cursor-not-allowed disabled:opacity-60"
+            onClick={onNew}
+            disabled={disabled}
+            title="Start a new conversation"
+          >
+            + New chat
+          </button>
+        )}
         {view === 'chat' && (
           <div className="flex gap-1.5">
             <button
@@ -181,10 +205,120 @@ export default function Sidebar({
             onSelect={onSelectRun}
           />
         ) : view === 'workspaces' ? (
-          <p className="p-3 text-[13px] leading-relaxed text-slate-400">
-            Manage workspaces in the main panel. Each workspace has its own root
-            folder, command policy, and private chats.
-          </p>
+          <div className="flex h-full flex-col gap-2">
+            <div className="shrink-0 rounded-lg border border-white/10 bg-[#1c202b] p-2.5">
+              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                New workspace
+              </h3>
+              <input
+                className="w-full rounded-md border border-white/10 bg-black/30 px-3 py-1.5 text-sm text-slate-100 outline-none focus:border-indigo-500"
+                placeholder="Name, e.g. Website project"
+                value={wsNewName}
+                onChange={(e) => setWsNewName(e.target.value)}
+              />
+              <div className="mt-2 flex gap-2">
+                <input
+                  className="min-w-0 flex-1 rounded-md border border-white/10 bg-black/30 px-3 py-1.5 text-sm text-slate-100 outline-none focus:border-indigo-500"
+                  placeholder="Root path"
+                  value={wsNewRoot}
+                  onChange={(e) => setWsNewRoot(e.target.value)}
+                />
+                <button
+                  className="shrink-0 cursor-pointer rounded-md bg-white/5 px-3 py-1.5 text-sm font-medium text-slate-200 hover:bg-white/10"
+                  onClick={() => setWsPickerOpen(true)}
+                  title="Browse to choose a folder"
+                >
+                  Browse…
+                </button>
+              </div>
+              <button
+                className="mt-2 w-full cursor-pointer rounded-md bg-indigo-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-600 disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={wsCreating || !wsNewName.trim() || !wsNewRoot.trim()}
+                onClick={() => {
+                  setWsCreating(true)
+                  void onCreateWorkspace(wsNewName.trim(), wsNewRoot.trim()).finally(() => {
+                    setWsCreating(false)
+                    setWsNewName('')
+                    setWsNewRoot('')
+                  })
+                }}
+              >
+                {wsCreating ? 'Creating…' : 'Create workspace'}
+              </button>
+            </div>
+
+            <div className="sidebar-scroll min-h-0 flex flex-1 flex-col gap-2 overflow-y-auto">
+              {workspaces.length === 0 && (
+                <p className="p-2 text-xs text-slate-500">No workspaces yet — create one above.</p>
+              )}
+              {workspaces.map((ws) => (
+              <div
+                key={ws.id}
+                className={`rounded-lg border bg-[#1c202b] p-2.5 ${
+                  selectedWsId === ws.id ? 'border-indigo-500/70' : 'border-white/10'
+                }`}
+              >
+                <button
+                  className="w-full cursor-pointer text-left"
+                  onClick={() => onSelectWorkspace(ws.id)}
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="truncate text-sm font-semibold text-white">{ws.name}</span>
+                    {ws.is_default && (
+                      <span className="shrink-0 rounded bg-white/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-300">
+                        Default
+                      </span>
+                    )}
+                    {ws.active && (
+                      <span className="shrink-0 rounded bg-emerald-500/20 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-emerald-300">
+                        Active
+                      </span>
+                    )}
+                  </div>
+                  <p className="mt-0.5 truncate text-xs text-slate-400">{ws.root_path}</p>
+                </button>
+                <div className="mt-2 flex items-center justify-between gap-1.5 border-t border-white/5 pt-2">
+                  <span className="truncate text-[11px] text-slate-500">
+                    Updated {formatTimestamp(ws.updated_at)}
+                  </span>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    {!ws.is_default &&
+                      (ws.active ? (
+                        <span className="text-xs text-slate-500">Active now</span>
+                      ) : (
+                        <button
+                          className="cursor-pointer rounded-md bg-emerald-600/25 px-2.5 py-1.5 text-xs font-medium text-emerald-200 hover:bg-emerald-600/40 disabled:cursor-not-allowed disabled:opacity-60"
+                          disabled={disabled}
+                          onClick={() => void onActivateWorkspace(ws.id)}
+                        >
+                          Activate
+                        </button>
+                      ))}
+                    {!ws.is_default && (
+                      <button
+                        className="cursor-pointer rounded-md bg-red-500/15 px-2.5 py-1.5 text-xs font-medium text-red-300 hover:bg-red-500/30"
+                        onClick={() => {
+                          if (
+                            window.confirm(
+                              `Delete workspace "${ws.name}" (${ws.root_path})?\n\n` +
+                                'The workspace entry and its local .local_agent_workspace policy are removed, and any threads ' +
+                                'belonging to it stop showing. Files on disk are NOT deleted. If this is the active workspace, ' +
+                                'the app switches back to the default workspace.',
+                            )
+                          ) {
+                            void onDeleteWorkspace(ws.id)
+                          }
+                        }}
+                      >
+                        Delete
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
+            </div>
+          </div>
         ) : (
           <>
             {visible.length === 0 && (
@@ -246,6 +380,14 @@ export default function Sidebar({
           </>
         )}
       </nav>
+      <FolderPicker
+        open={wsPickerOpen}
+        onPick={(path) => {
+          setWsNewRoot(path)
+          setWsPickerOpen(false)
+        }}
+        onClose={() => setWsPickerOpen(false)}
+      />
     </aside>
   )
 }

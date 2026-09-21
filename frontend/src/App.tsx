@@ -31,6 +31,14 @@ export default function App() {
   const [runsLoading, setRunsLoading] = useState(true)
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null)
+
+  const selectedWorkspace =
+    workspaces.find((w) => w.id === selectedWorkspaceId) ??
+    workspaces.find((w) => w.active) ??
+    workspaces.find((w) => w.is_default) ??
+    workspaces[0] ??
+    null
 
   const { toasts, notify, dismiss } = useToasts()
 
@@ -235,6 +243,7 @@ await deleteThread(threadId)
         runsLoading={runsLoading}
         selectedRunId={selectedRunId}
         workspaces={workspaces}
+        selectedWorkspaceId={selectedWorkspace?.id ?? null}
         onViewChange={handleViewChange}
         onSelectRun={setSelectedRunId}
         onToggleArchived={() => setShowArchived((v) => !v)}
@@ -244,15 +253,15 @@ await deleteThread(threadId)
         onArchive={(id) => void toggleArchive(id)}
         onDelete={(id) => void handleDelete(id)}
         onWorkspaceChange={(id) => void handleActivateWorkspace(id)}
+        onSelectWorkspace={setSelectedWorkspaceId}
+        onCreateWorkspace={handleCreateWorkspace}
+        onActivateWorkspace={handleActivateWorkspace}
+        onDeleteWorkspace={handleDeleteWorkspace}
       />
       {view === 'workspaces' ? (
         <WorkspacesView
-          workspaces={workspaces}
-          streaming={chat.streaming}
-          onCreate={(name, root) => handleCreateWorkspace(name, root)}
-          onActivate={(id) => handleActivateWorkspace(id)}
+          workspace={selectedWorkspace}
           onUpdate={(id, name, config) => handleUpdateWorkspace(id, name, config)}
-          onDelete={(id) => handleDeleteWorkspace(id)}
         />
       ) : view === 'runs' ? (
         <RunsView summaries={runSummaries} selectedId={selectedRunId} />
