@@ -19,9 +19,12 @@ ALLOWED_COMMANDS_FILE = os.getenv(
     "ALLOWED_COMMANDS_FILE", os.path.join(BASE_DIR, "allowed_commands.json")
 )
 
-# Workspace configuration.
+# Workspace configuration: a per-workspace folder holding machine config and
+# free-form agent guidelines.
 DEFAULT_WORKSPACE_ID = os.getenv("DEFAULT_WORKSPACE_ID", "default")
-WORKSPACE_CONFIG_FILE = os.getenv("WORKSPACE_CONFIG_FILE", ".local_agent_workspace")
+WORKSPACE_CONFIG_DIR = os.getenv("WORKSPACE_CONFIG_DIR", ".local_agent_workspace")
+WORKSPACE_CONFIG_NAME = os.getenv("WORKSPACE_CONFIG_NAME", "config.json")
+WORKSPACE_GUIDELINES_NAME = os.getenv("WORKSPACE_GUIDELINES_NAME", "guidelines.md")
 
 SYSTEM_PROMPT = (
     "You are a helpful assistant running on llama3.1:8b. Be concise and accurate. "

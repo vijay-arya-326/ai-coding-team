@@ -33,6 +33,9 @@ from .config import (  # noqa: F401
     SHELL_TIMEOUT,
     SYSTEM_PROMPT,
     THREADS_DB_PATH,
+    WORKSPACE_CONFIG_DIR,
+    WORKSPACE_CONFIG_NAME,
+    WORKSPACE_GUIDELINES_NAME,
 )
 from .model import get_graph  # noqa: F401
 from .persistence import (  # noqa: F401
@@ -70,7 +73,6 @@ from .tools import (  # noqa: F401
 )
 from .workspace import (  # noqa: F401
     DEFAULT_WORKSPACE_ID,
-    WORKSPACE_CONFIG_FILE,
     Workspace,
     activate_workspace,
     create_workspace,
@@ -80,7 +82,9 @@ from .workspace import (  # noqa: F401
     get_workspace,
     init_current,
     list_workspaces,
+    load_workspace_guidelines,
     save_workspace_config,
+    save_workspace_guidelines,
     set_current,
     update_workspace,
     workspace_by_root,

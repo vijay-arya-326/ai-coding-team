@@ -133,9 +133,9 @@ const handleViewChange = useCallback(
   )
 
   const handleUpdateWorkspace = useCallback(
-    async (workspaceId: string, name: string, config: WorkspaceConfig) => {
+    async (workspaceId: string, name: string, config: WorkspaceConfig, guidelines?: string) => {
       try {
-        await updateWorkspace(workspaceId, name, config)
+        await updateWorkspace(workspaceId, name, config, guidelines)
         await refreshWorkspaces()
         notify('Workspace saved')
       } catch (err) {
@@ -261,7 +261,9 @@ await deleteThread(threadId)
       {view === 'workspaces' ? (
         <WorkspacesView
           workspace={selectedWorkspace}
-          onUpdate={(id, name, config) => handleUpdateWorkspace(id, name, config)}
+          onUpdate={(id, name, config, guidelines) =>
+            handleUpdateWorkspace(id, name, config, guidelines)
+          }
         />
       ) : view === 'runs' ? (
         <RunsView summaries={runSummaries} selectedId={selectedRunId} />

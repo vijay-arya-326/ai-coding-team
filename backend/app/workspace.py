@@ -2,8 +2,13 @@
 
 Every workspace is a directory on disk. Its root is the boundary for file
 operations performed by the agent, and its rules live in a local
-``.local_agent_workspace`` JSON file:
+``.local_agent_workspace`` folder:
 
+    .local_agent_workspace/
+      config.json     machine policy (safe/unsafe/allowed commands, exemptions)
+      guidelines.md   free-form instructions injected into the agent prompt
+
+    config.json shape:
     {
       "safe_commands": ["npm test"],
       "unsafe_commands": ["terraform destroy"],
@@ -12,10 +17,11 @@ operations performed by the agent, and its rules live in a local
     }
 
 The default workspace is the project root; it keeps reading the legacy
-``allowed_commands.json`` for its exemptions unless a
-``.local_agent_workspace`` file appears at the project root. The active
-workspace id is persisted in app ``settings`` so it survives restarts, and it
-is also kept in memory for synchronous tool calls.
+``allowed_commands.json`` for its exemptions unless a ``.local_agent_workspace``
+folder appears at the project root. A legacy ``.local_agent_workspace`` JSON
+file is migrated into ``.local_agent_workspace/config.json`` automatically. The
+active workspace id is persisted in app ``settings`` so it survives restarts,
+and it is also kept in memory for synchronous tool calls.
 """
 
 import json
@@ -30,7 +36,9 @@ from .config import (
     ALLOWED_COMMANDS_FILE,
     DEFAULT_WORKSPACE_ID,
     PROJECT_ROOT,
-    WORKSPACE_CONFIG_FILE,
+    WORKSPACE_CONFIG_DIR,
+    WORKSPACE_CONFIG_NAME,
+    WORKSPACE_GUIDELINES_NAME,
 )
 from .db import meta_conn as _meta_conn
 
@@ -38,9 +46,49 @@ logger = logging.getLogger("app.agent")
 
 _current: "Workspace | None" = None
 
+GUIDELINES_TEMPLATE = (
+    "# Workspace guidelines\n\n"
+    "Instructions in this file are added to the agent's system prompt whenever it\n"
+    "works in this workspace. Use it for conventions, constraints, and context.\n"
+)
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def workspace_dir(root: str) -> str:
+    """Path of the .local_agent_workspace folder for a workspace root."""
+    return os.path.join(root, WORKSPACE_CONFIG_DIR)
+
+
+def config_path(root: str) -> str:
+    return os.path.join(workspace_dir(root), WORKSPACE_CONFIG_NAME)
+
+
+def guidelines_path(root: str) -> str:
+    return os.path.join(workspace_dir(root), WORKSPACE_GUIDELINES_NAME)
+
+
+def migrate_workspace_config(root: str) -> None:
+    """Convert a legacy .local_agent_workspace JSON file into the folder layout."""
+    legacy = workspace_dir(root)
+    if not os.path.isfile(legacy):
+        return
+    try:
+        with open(legacy, encoding="utf-8") as f:
+            data = json.load(f)
+        cfg = data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        cfg = {}
+    try:
+        os.remove(legacy)
+        os.makedirs(legacy, exist_ok=True)
+        with open(config_path(root), "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2, ensure_ascii=False)
+        logger.info("migrated legacy workspace config root=%s", root)
+    except OSError:
+        logger.exception("workspace config migration failed root=%s", root)
 
 
 @dataclass
@@ -58,10 +106,15 @@ class Workspace:
         """Where persistent exemptions/rules are written for this workspace."""
         if self.is_default:
             # Backward compatible: default workspace still uses the legacy file
-            # unless a .local_agent_workspace exists at the project root.
-            legacy = os.path.exists(os.path.join(PROJECT_ROOT, WORKSPACE_CONFIG_FILE))
-            return os.path.join(PROJECT_ROOT, WORKSPACE_CONFIG_FILE) if legacy else ALLOWED_COMMANDS_FILE
-        return os.path.join(self.root_path, WORKSPACE_CONFIG_FILE)
+            # unless a .local_agent_workspace folder exists at the project root.
+            if os.path.isdir(workspace_dir(PROJECT_ROOT)):
+                return config_path(PROJECT_ROOT)
+            return ALLOWED_COMMANDS_FILE
+        return config_path(self.root_path)
+
+    @property
+    def guidelines_file(self) -> str:
+        return guidelines_path(self.root_path)
 
 
 def make_workspace(
@@ -94,8 +147,9 @@ def default_workspace() -> Workspace:
 
 
 def load_workspace_config(root: str) -> dict[str, Any]:
-    """Read the .local_agent_workspace JSON at root; {} when missing/invalid."""
-    path = os.path.join(root, WORKSPACE_CONFIG_FILE)
+    """Read .local_agent_workspace/config.json at root; {} when missing/invalid."""
+    migrate_workspace_config(root)
+    path = config_path(root)
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
@@ -105,11 +159,27 @@ def load_workspace_config(root: str) -> dict[str, Any]:
 
 
 def save_workspace_config(root: str, config: dict[str, Any]) -> None:
-    """Write the .local_agent_workspace JSON at root (creating the dir)."""
-    path = os.path.join(root, WORKSPACE_CONFIG_FILE)
-    os.makedirs(root, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
+    """Write .local_agent_workspace/config.json at root (creating the folder)."""
+    migrate_workspace_config(root)
+    os.makedirs(workspace_dir(root), exist_ok=True)
+    with open(config_path(root), "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
+
+
+def load_workspace_guidelines(root: str) -> str:
+    """Read .local_agent_workspace/guidelines.md at root; '' when missing."""
+    try:
+        with open(guidelines_path(root), encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def save_workspace_guidelines(root: str, text: str) -> None:
+    """Write .local_agent_workspace/guidelines.md at root (creating the folder)."""
+    os.makedirs(workspace_dir(root), exist_ok=True)
+    with open(guidelines_path(root), "w", encoding="utf-8") as f:
+        f.write(text)
 
 
 def get_current() -> Workspace:
@@ -229,7 +299,10 @@ async def create_workspace(name: str, root_path: str) -> Workspace:
         (ws.id, ws.name, ws.root_path, json.dumps(ws.config), now, now),
     )
     await conn.commit()
-    save_workspace_config(ws.root_path, {})
+    # Preserve any migrated legacy config instead of clobbering it with {}.
+    save_workspace_config(ws.root_path, load_workspace_config(ws.root_path) or {})
+    if not os.path.exists(guidelines_path(ws.root_path)):
+        save_workspace_guidelines(ws.root_path, GUIDELINES_TEMPLATE)
     logger.info("workspace created id=%s root=%s", ws.id, ws.root_path)
     return ws
 
@@ -238,6 +311,7 @@ async def update_workspace(
     ws_id: str,
     name: str | None = None,
     config: dict[str, Any] | None = None,
+    guidelines: str | None = None,
 ) -> Workspace | None:
     ws = await get_workspace(ws_id)
     if ws is None:
@@ -256,6 +330,8 @@ async def update_workspace(
     )
     await conn.commit()
     save_workspace_config(ws.root_path, cfg)
+    if guidelines is not None:
+        save_workspace_guidelines(ws.root_path, guidelines)
     if _current is not None and _current.id == ws_id:
         set_current(
             Workspace(

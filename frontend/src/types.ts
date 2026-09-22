@@ -122,6 +122,7 @@ export interface Workspace {
   root_path: string
   is_default: boolean
   config: WorkspaceConfig
+  guidelines?: string
   created_at: string | null
   updated_at: string | null
   active: boolean

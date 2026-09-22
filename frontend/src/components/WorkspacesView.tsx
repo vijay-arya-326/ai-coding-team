@@ -4,7 +4,12 @@ import type { Workspace, WorkspaceConfig } from '../types'
 
 interface WorkspacesViewProps {
   workspace: Workspace | null
-  onUpdate: (workspaceId: string, name: string, config: WorkspaceConfig) => Promise<void>
+  onUpdate: (
+    workspaceId: string,
+    name: string,
+    config: WorkspaceConfig,
+    guidelines?: string,
+  ) => Promise<void>
 }
 
 function lines(list: string[] | undefined): string {
@@ -20,43 +25,62 @@ function toList(text: string): string[] {
 
 function ConfigEditor({
   initial,
+  initialGuidelines,
   onSave,
 }: {
   initial: WorkspaceConfig
-  onSave: (config: WorkspaceConfig) => void
+  initialGuidelines: string
+  onSave: (config: WorkspaceConfig, guidelines: string) => void
 }) {
   const [safe, setSafe] = useState(lines(initial.safe_commands))
   const [unsafe, setUnsafe] = useState(lines(initial.unsafe_commands))
   const [allowed, setAllowed] = useState(lines(initial.allowed_commands))
+  const [guidelines, setGuidelines] = useState(initialGuidelines)
 
   return (
-    <div className="mt-3 grid grid-cols-3 gap-3">
-      {(
-        [
-          ['Safe commands (run freely)', safe, setSafe],
-          ['Unsafe markers (require approval)', unsafe, setUnsafe],
-          ['Allowed commands (never prompt)', allowed, setAllowed],
-        ] as const
-      ).map(([label, value, setter]) => (
-        <div key={label}>
-          <label className="mb-1 block text-xs font-medium text-slate-400">{label}</label>
-          <textarea
-            className="h-44 w-full resize-y rounded-md border border-white/10 bg-black/30 p-2 text-xs text-slate-200 outline-none focus:border-indigo-500"
-            value={value}
-            onChange={(e) => setter(e.target.value)}
-            spellCheck={false}
-          />
-        </div>
-      ))}
-      <div className="col-span-3 flex justify-end gap-2">
+    <div className="mt-3">
+      <div className="grid grid-cols-3 gap-3">
+        {(
+          [
+            ['Safe commands (run freely)', safe, setSafe],
+            ['Unsafe markers (require approval)', unsafe, setUnsafe],
+            ['Allowed commands (never prompt)', allowed, setAllowed],
+          ] as const
+        ).map(([label, value, setter]) => (
+          <div key={label}>
+            <label className="mb-1 block text-xs font-medium text-slate-400">{label}</label>
+            <textarea
+              className="h-44 w-full resize-y rounded-md border border-white/10 bg-black/30 p-2 text-xs text-slate-200 outline-none focus:border-indigo-500"
+              value={value}
+              onChange={(e) => setter(e.target.value)}
+              spellCheck={false}
+            />
+          </div>
+        ))}
+      </div>
+      <div className="mt-3">
+        <label className="mb-1 block text-xs font-medium text-slate-400">
+          Guidelines (guidelines.md — added to the agent's system prompt here)
+        </label>
+        <textarea
+          className="h-44 w-full resize-y rounded-md border border-white/10 bg-black/30 p-2 text-xs text-slate-200 outline-none focus:border-indigo-500"
+          value={guidelines}
+          onChange={(e) => setGuidelines(e.target.value)}
+          spellCheck={false}
+        />
+      </div>
+      <div className="mt-3 flex justify-end gap-2">
         <button
           className="cursor-pointer rounded-md bg-indigo-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-600"
           onClick={() =>
-            onSave({
-              safe_commands: toList(safe),
-              unsafe_commands: toList(unsafe),
-              allowed_commands: toList(allowed),
-            })
+            onSave(
+              {
+                safe_commands: toList(safe),
+                unsafe_commands: toList(unsafe),
+                allowed_commands: toList(allowed),
+              },
+              guidelines,
+            )
           }
         >
           Save config
@@ -90,13 +114,17 @@ export default function WorkspacesView({ workspace, onUpdate }: WorkspacesViewPr
               </span>
             </div>
             <p className="mb-4 text-sm text-slate-400">
-              Select a workspace from the left panel to view or edit here. Command policy is
-              persisted to the workspace's <code>.local_agent_workspace</code> file.
+              Select a workspace from the left panel to view or edit here. Policy and guidelines
+              are persisted to the workspace's <code>.local_agent_workspace</code> folder
+              (<code>config.json</code> and <code>guidelines.md</code>).
             </p>
             <ConfigEditor
               key={workspace.id}
               initial={workspace.config}
-              onSave={(config) => void onUpdate(workspace.id, workspace.name, config)}
+              initialGuidelines={workspace.guidelines ?? ''}
+              onSave={(config, guidelines) =>
+                void onUpdate(workspace.id, workspace.name, config, guidelines)
+              }
             />
           </>
         ) : (

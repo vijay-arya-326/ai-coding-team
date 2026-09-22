@@ -301,7 +301,7 @@ export default function Sidebar({
                           if (
                             window.confirm(
                               `Delete workspace "${ws.name}" (${ws.root_path})?\n\n` +
-                                'The workspace entry and its local .local_agent_workspace policy are removed, and any threads ' +
+                                'The workspace entry is removed (its .local_agent_workspace folder is left on disk), and any threads ' +
                                 'belonging to it stop showing. Files on disk are NOT deleted. If this is the active workspace, ' +
                                 'the app switches back to the default workspace.',
                             )

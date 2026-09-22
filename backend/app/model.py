@@ -18,10 +18,28 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from .config import OLLAMA_BASE_URL, OLLAMA_MODEL, SYSTEM_PROMPT
 from .persistence import open_checkpointer
 from .tools import TOOLS
+from .workspace import get_current, load_workspace_guidelines
 
 logger = logging.getLogger("app.agent")
 
 _graph = None
+
+
+def system_prompt_for_current() -> str:
+    """Base system prompt plus the active workspace's guidelines.md, if any."""
+    try:
+        ws = get_current()
+        guidelines = load_workspace_guidelines(ws.root_path).strip()
+    except Exception:  # pragma: no cover - never block a chat on prompt building
+        logger.exception("failed to load workspace guidelines")
+        return SYSTEM_PROMPT
+    if not guidelines:
+        return SYSTEM_PROMPT
+    return (
+        f"{SYSTEM_PROMPT}\n\n"
+        f"Workspace: {ws.name} (root: {ws.root_path})\n"
+        f"Follow these workspace guidelines:\n{guidelines}"
+    )
 
 
 def create_llm() -> ChatOllama:
@@ -62,7 +80,7 @@ def model_supports_tools() -> bool:
 
 def _agent_node(llm: ChatOllama) -> callable:
     def agent(state: MessagesState) -> dict:
-        messages = [SystemMessage(content=SYSTEM_PROMPT), *state["messages"]]
+        messages = [SystemMessage(content=system_prompt_for_current()), *state["messages"]]
         return {"messages": [llm.invoke(messages)]}
 
     return agent

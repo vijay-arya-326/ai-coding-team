@@ -4,7 +4,7 @@ Approvals are stored in memory with a time-to-live. Permanent exemptions are
 persisted per workspace (the default workspace still uses the legacy
 ``allowed_commands.json``) ; one-time exemptions live in memory only. Policy
 (safe/unsafe command sets) is derived per workspace from its
-``.local_agent_workspace`` config plus the built-in shell defaults.
+``.local_agent_workspace/config.json`` plus the built-in shell defaults.
 """
 
 import json

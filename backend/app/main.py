@@ -43,6 +43,7 @@ from app.agent import (
     init_current,
     list_threads,
     list_workspaces,
+    load_workspace_guidelines,
     record_message,
     record_runs,
     resolve_approval,
@@ -124,6 +125,7 @@ class WorkspaceMkdirRequest(BaseModel):
 class WorkspaceUpdateRequest(BaseModel):
     name: str | None = None
     config: dict | None = None
+    guidelines: str | None = None
 
 
 _WINDOWS_DRIVES = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -478,6 +480,7 @@ async def workspaces_list() -> list[dict]:
             "root_path": ws.root_path,
             "is_default": ws.is_default,
             "config": ws.config,
+            "guidelines": load_workspace_guidelines(ws.root_path),
             "created_at": ws.created_at,
             "updated_at": ws.updated_at,
             "active": ws.id == active_id,
@@ -515,6 +518,7 @@ async def workspace_detail(ws_id: str) -> dict:
         "root_path": ws.root_path,
         "is_default": ws.is_default,
         "config": ws.config,
+        "guidelines": load_workspace_guidelines(ws.root_path),
         "created_at": ws.created_at,
         "updated_at": ws.updated_at,
     }
@@ -522,7 +526,9 @@ async def workspace_detail(ws_id: str) -> dict:
 
 @app.patch("/workspaces/{ws_id}")
 async def workspace_update(ws_id: str, update: WorkspaceUpdateRequest) -> dict:
-    ws = await update_workspace(ws_id, name=update.name, config=update.config)
+    ws = await update_workspace(
+        ws_id, name=update.name, config=update.config, guidelines=update.guidelines
+    )
     if ws is None:
         raise HTTPException(status_code=404, detail="Workspace not found")
     logger.info("workspace updated id=%s", ws_id)
@@ -532,6 +538,7 @@ async def workspace_update(ws_id: str, update: WorkspaceUpdateRequest) -> dict:
         "root_path": ws.root_path,
         "is_default": ws.is_default,
         "config": ws.config,
+        "guidelines": load_workspace_guidelines(ws.root_path),
         "created_at": ws.created_at,
         "updated_at": ws.updated_at,
     }

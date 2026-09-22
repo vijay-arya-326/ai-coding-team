@@ -88,11 +88,12 @@ export function updateWorkspace(
   workspaceId: string,
   name: string,
   config: WorkspaceConfig,
+  guidelines?: string,
 ): Promise<Workspace> {
   return jsonFetch<Workspace>(`${BASE}/workspaces/${encodeURIComponent(workspaceId)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, config }),
+    body: JSON.stringify({ name, config, guidelines }),
   })
 }
 
