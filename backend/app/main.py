@@ -56,7 +56,7 @@ from app.agent import (
     update_workspace,
     _now,
 )
-from app.logging import init_logging
+from app.logconfig import init_logging
 from app.runtracker import RunRegistry, RunTracker
 
 logger = init_logging()

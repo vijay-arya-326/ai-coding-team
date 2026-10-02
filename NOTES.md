@@ -1,12 +1,13 @@
 ﻿# Session Handover Notes
 
-Snapshot for the next agent session (updated 2026-10-02). Branch: `feature/genui-streaming` (HEAD `89d11cc`; uncommitted: `frontend/package-lock.json` only).
+Snapshot for the next agent session (updated 2026-10-02). Branch: `feature/genui-streaming` (base HEAD `1506176`). This snapshot: `app/logging.py` → `app/logconfig.py` rename (+ `main.py` import) to stop stdlib shadowing, NOTES quick-start refresh, `llama3.1:8b` pulled to Ollama (chat smoke-tested OK, tools enabled). Smoke-test residue: untracked `tmp/output.txt` + thread `thread_b9d9b9c52a634886b657bfb28569b2a6`.
 
 ## Environment
-- **OS: macOS (darwin), shell zsh.** Repo: `/Users/vj/Sites/official/ai-coding-team`. (Older snapshots were Windows/pwsh — Windows-specific commands below are historical only.)
+- **OS: macOS (darwin), shell zsh.** Repo: `/Users/vj/Sites/official/ai-coding-team`. (Sessions before 2026-10-02 ran on Windows/pwsh.)
 - Backend: uvicorn on `:8000` — **verified booting on macOS 2026-10-02** (`{"status":"ok"}`), DB `backend/db/agent_state.db` fine.
 - Frontend: vite on `:5173`, `frontend/node_modules` installed.
-- Python: venv at `backend/.venv` (created by `uv`, Python 3.14.7, `uv` at `~/.local/bin/uv`). Model: `llama3.1:8b` via Ollama (`http://localhost:11434`) — **not yet verified reachable on this Mac.**
+- Python: venv at `backend/.venv` (uv-managed, `uv` at `~/.local/bin/uv`). Ollama (`http://localhost:11434`) reachable; pulled models: `llama3.1:8b` (app default, `OLLAMA_MODEL` in `config.py:9`, tools-capable), `qwen2.5vl:7b`, `qwen2.5vl:3b`, `phi3:latest`, `gemma4:e2b`, `LLAMA3.2:latest`, `mistral:latest`, `gemma:latest`. NOTE: the compiled agent graph caches tool-capability at first chat request — restart backend after pulling a model.
+- **Do not add PyPI `logging` as a dependency** (a bogus `logging>=0.4.9.6` was briefly added while debugging the import error, then removed) — never depend on packages whose names shadow stdlib.
 - `testing/` E2E suite (105 checks, ~15 min) is gitignored and **not present on this machine** — needs to be copied/restored before any suite run.
 - **Rules**: never delete user files/threads/logs; never `git commit`/`git push` without explicit user approval; no comments in code unless asked.
 - Pitfalls: backend files are CRLF (edit with exact/large anchors); suite's `request(method, path, body)` expects a **dict** body; processes are headless (no GUI dialogs) — custom in-page folder picker is the design; zsh has no `timeout` (use `gtimeout` or background+poll).
@@ -28,44 +29,41 @@ Snapshot for the next agent session (updated 2026-10-02). Branch: `feature/genui
 3. **Restore + re-run full E2E suite** — `testing/` missing on this Mac; last green baseline was `testing/logs/e2e_20260921_131049.log` (105/0) on Windows, predating folder/guidelines + browse-home changes.
 4. **Roadmap for later** (from `todo.txt`): SearXNG docker web-search API; page viewer/summarizer (obscura/playwright); agent task decomposition + todo UI; agent re-plans tasks; git drift/fetch before push.
 
-## Typical commands
-- Restart backend: stop the `:8000` listener, then `WScript.Shell.Run('cmd /c "cd /d <repo>\backend && .venv\Scripts\uvicorn.exe app.main:app --port 8000 > backend.out.log 2> backend.err.log"', 0)`; poll `/health`.
-- Frontend: `npm run dev` (vite, HMR); build `npm run build`; lint `npm run lint` (0 errors).
-- Probe scripts live under `C:\Users\VIJAYK~1\AppData\Local\Temp\opencode\` (throwaway): `chat_probe.py`, `ws_folder_probe.py`, `db_trace.py`, etc.
-## Quick start (how to run services)
+## Quick start — run services (OS-independent)
 
-### Backend
-`powershell
-cd C:\Users\VijayKumar\Desktop\Projects\personal\vj\ai-coding-team\backend
-.\.venv\Scripts\uvicorn.exe app.main:app --reload --port 8000
-`
-Or run from backend dir: uv run uvicorn app.main:app --reload --port 8000
+`<project_root>` = repo root (this file's folder). Forward slashes work in zsh/bash and PowerShell; on cmd.exe use backslashes. Requires: [uv](https://docs.astral.sh/uv), Node.js, Ollama with a pulled model.
 
-Health: http://localhost:8000/health | Docs: http://localhost:8000/docs
+### Backend → http://localhost:8000
+```sh
+cd <project_root>/backend
+uv sync                                  # first time: creates .venv
+uv run uvicorn app.main:app --reload --port 8000
+```
+Expected:
+```
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     Application startup complete.
+```
+Verify:
+```sh
+curl http://localhost:8000/health
+# {"status":"ok"}
+```
+- Docs: http://localhost:8000/docs | Stop: kill the listener on port 8000 (`lsof -nP -iTCP:8000 -sTCP:LISTEN` to find PID).
+- Logs: file `backend/logs/app.log` (daily rotation, 7-day retention) + stderr.
 
-### Frontend
-`powershell
-cd C:\Users\VijayKumar\Desktop\Projects\personal\vj\ai-coding-team\frontend
-npm install  # first time
-npm run dev
-`
-Runs at http://localhost:5173
+### Frontend → http://localhost:5173
+```sh
+cd <project_root>/frontend
+npm install                               # first time
+npm run dev                               # vite, HMR
+```
+Expected (vite ~8.x):
+```
+  VITE v8.x.x  ready in <n> ms
+  ➜  Local:   http://localhost:5173/
+```
+- Build: `npm run build` | Lint: `npm run lint`
 
-## Quick start (how to run services)
-
-### Backend
-`powershell
-cd C:\Users\VijayKumar\Desktop\Projects\personal\vj\ai-coding-team\backend
-.\.venv\Scripts\uvicorn.exe app.main:app --reload --port 8000
-` 
-Or run from backend dir: uv run uvicorn app.main:app --reload --port 8000
-
-Health: http://localhost:8000/health | Docs: http://localhost:8000/docs
-
-### Frontend
-`powershell
-cd C:\Users\VijayKumar\Desktop\Projects\personal\vj\ai-coding-team\frontend
-npm install  # first time
-npm run dev
-` 
-Runs at http://localhost:5173
+### Model config
+- Backend talks to Ollama at `OLLAMA_MODEL` (default `llama3.1:8b`, `config.py:9`) — already pulled and smoke-tested 2026-10-02; override the env var to switch models (no `.env` exists).
