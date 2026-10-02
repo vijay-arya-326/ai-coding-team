@@ -1,4 +1,4 @@
-# Session Handover Notes
+﻿# Session Handover Notes
 
 Snapshot for the next agent session (generated 2026-09-22). Branch: `feature/genui-streaming` (latest commits `0f59a8b` recent dropdown, `8b9382d` sidebar workspace list; this note + pending changes are the next commit).
 
@@ -38,3 +38,40 @@ Snapshot for the next agent session (generated 2026-09-22). Branch: `feature/gen
 - Restart backend: stop the `:8000` listener, then `WScript.Shell.Run('cmd /c "cd /d <repo>\backend && .venv\Scripts\uvicorn.exe app.main:app --port 8000 > backend.out.log 2> backend.err.log"', 0)`; poll `/health`.
 - Frontend: `npm run dev` (vite, HMR); build `npm run build`; lint `npm run lint` (0 errors).
 - Probe scripts live under `C:\Users\VIJAYK~1\AppData\Local\Temp\opencode\` (throwaway): `chat_probe.py`, `ws_folder_probe.py`, `db_trace.py`, etc.
+## Quick start (how to run services)
+
+### Backend
+`powershell
+cd C:\Users\VijayKumar\Desktop\Projects\personal\vj\ai-coding-team\backend
+.\.venv\Scripts\uvicorn.exe app.main:app --reload --port 8000
+`
+Or run from backend dir: uv run uvicorn app.main:app --reload --port 8000
+
+Health: http://localhost:8000/health | Docs: http://localhost:8000/docs
+
+### Frontend
+`powershell
+cd C:\Users\VijayKumar\Desktop\Projects\personal\vj\ai-coding-team\frontend
+npm install  # first time
+npm run dev
+`
+Runs at http://localhost:5173
+
+## Quick start (how to run services)
+
+### Backend
+`powershell
+cd C:\Users\VijayKumar\Desktop\Projects\personal\vj\ai-coding-team\backend
+.\.venv\Scripts\uvicorn.exe app.main:app --reload --port 8000
+` 
+Or run from backend dir: uv run uvicorn app.main:app --reload --port 8000
+
+Health: http://localhost:8000/health | Docs: http://localhost:8000/docs
+
+### Frontend
+`powershell
+cd C:\Users\VijayKumar\Desktop\Projects\personal\vj\ai-coding-team\frontend
+npm install  # first time
+npm run dev
+` 
+Runs at http://localhost:5173
