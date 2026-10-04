@@ -14,3 +14,5 @@ tools_demo_test/
 tools_demo/
 testing/
 allowed_commands.json
+/tmp/
+/home/user/output.txt
