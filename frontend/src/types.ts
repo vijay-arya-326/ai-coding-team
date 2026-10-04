@@ -26,6 +26,7 @@ export interface ThreadDetail {
   created_at: string | null
   updated_at: string | null
   messages: MessageDto[]
+  pending_approval: ApprovalInfo | null
 }
 
 export interface ThreadUpdate {
@@ -58,14 +59,8 @@ export interface ApprovalInfo {
 }
 
 export interface ApprovalDecision {
-  status: string
-  approval_id: string
-  kind?: string
-  result?: string
-  exit_code?: number
-  output?: string
-  error?: string
-  allow_granted?: 'once' | 'always'
+  approved: boolean
+  allow?: 'once' | 'always'
 }
 
 export type ApprovalMode = 'once' | 'always'

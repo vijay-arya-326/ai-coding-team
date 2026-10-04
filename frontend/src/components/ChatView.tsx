@@ -65,6 +65,8 @@ export default function ChatView({
     bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
   }, [messages.length, stream, streamElapsedMs, toolActivity.length, streaming])
 
+  const pendingApproval = approvals.some((a) => !approvalDecisions[a.approval_id])
+
   const send = () => {
     atBottomRef.current = true
     onSend()
@@ -73,7 +75,7 @@ export default function ChatView({
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      if (input.trim() && !streaming) send()
+      if (input.trim() && !streaming && !pendingApproval) send()
     }
   }
 
@@ -198,14 +200,18 @@ export default function ChatView({
         className="mx-auto flex w-full max-w-3xl gap-2.5 px-6 pb-6"
         onSubmit={(e) => {
           e.preventDefault()
-          if (input.trim() && !streaming) send()
+          if (input.trim() && !streaming && !pendingApproval) send()
         }}
       >
         <textarea
           value={input}
           onChange={(e) => onInputChange(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Ask the agent something…"
+          placeholder={
+            pendingApproval
+              ? 'Approve or reject the pending action to continue…'
+              : 'Ask the agent something…'
+          }
           rows={2}
           className="flex-1 resize-none rounded-xl border border-slate-200 bg-white px-3.5 py-3 text-[15px] text-slate-800 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/15"
         />
@@ -223,7 +229,7 @@ export default function ChatView({
         ) : (
           <button
             type="submit"
-            disabled={!input.trim()}
+            disabled={!input.trim() || pendingApproval}
             className="self-end cursor-pointer rounded-xl bg-indigo-500 px-5 py-3 text-[15px] font-semibold text-white transition-colors hover:bg-indigo-600 disabled:cursor-not-allowed disabled:opacity-60"
           >
             Send

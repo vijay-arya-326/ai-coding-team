@@ -15,6 +15,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
+from langgraph.types import Command
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
@@ -25,7 +26,6 @@ ALLOWED_ORIGINS = [
 ]
 
 from app.agent import (
-    PENDING_APPROVALS,
     APP_VERSION,
     DEFAULT_WORKSPACE_ID,
     GENERATION_IDLE_TIMEOUT,
@@ -46,7 +46,6 @@ from app.agent import (
     load_workspace_guidelines,
     record_message,
     record_runs,
-    resolve_approval,
     runs_summary,
     set_current,
     thread_exists,
@@ -107,7 +106,8 @@ class ThreadUpdateRequest(BaseModel):
     archived: bool | None = None
 
 
-class ApprovalRequest(BaseModel):
+class ResumeRequest(BaseModel):
+    approval_id: str
     approved: bool
     allow: str | None = None
 
@@ -134,6 +134,24 @@ _WINDOWS_DRIVES = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 _runs = RunRegistry()
 
 
+def _pending_interrupts(state) -> list[dict]:
+    """Pending approval payloads of a StateSnapshot."""
+    pending: list[dict] = []
+    for task in getattr(state, "tasks", None) or ():
+        for item in getattr(task, "interrupts", None) or ():
+            value = item.value if isinstance(item.value, dict) else {}
+            pending.append(
+                {
+                    "approval_id": item.id,
+                    "kind": value.get("kind"),
+                    "description": value.get("description"),
+                    "command": value.get("command"),
+                    "path": value.get("path"),
+                }
+            )
+    return pending
+
+
 async def _require_thread(thread_id: str) -> dict:
     """Return thread metadata scoped to the active workspace or raise a 404.
 
@@ -157,28 +175,40 @@ async def _resolve_thread_workspace(thread_id: str) -> str:
     return get_current().id
 
 
-async def _event_generator(req: ChatRequest, config: RunnableConfig, stop_event: asyncio.Event):
+async def _event_generator(
+    req: ChatRequest | ResumeRequest, config: RunnableConfig, stop_event: asyncio.Event
+):
     thread_id = config["configurable"]["thread_id"]
     started = time.time()
     tokens = 0
     assistant_parts: list[str] = []
     stopped = False
-    logger.info("chat start thread=%s message=%r", thread_id, req.message[:200])
+    awaiting_approval = False
     try:
         ws_id = await _resolve_thread_workspace(thread_id)
-        await ensure_thread_meta(thread_id, req.message, ws_id)
-        await record_message(thread_id, "user", req.message, _now())
-        stream_started_at = _now()
+        if isinstance(req, ResumeRequest):
+            logger.info(
+                "chat resume thread=%s approved=%s allow=%s",
+                thread_id,
+                req.approved,
+                req.allow,
+            )
+            graph_input = Command(
+                resume={"approved": req.approved, "allow": req.allow}
+            )
+            stream_started_at = _now()
+        else:
+            logger.info("chat start thread=%s message=%r", thread_id, req.message[:200])
+            await ensure_thread_meta(thread_id, req.message, ws_id)
+            await record_message(thread_id, "user", req.message, _now())
+            graph_input = {"messages": [HumanMessage(content=req.message)]}
+            stream_started_at = _now()
         yield {"event": "start", "data": json.dumps({"thread_id": thread_id})}
 
         graph = await get_graph()
-        tracker = RunTracker(req.message)
+        tracker = RunTracker(req.message if isinstance(req, ChatRequest) else "approval decision")
 
-        stream = graph.astream_events(
-            {"messages": [HumanMessage(content=req.message)]},
-            config=config,
-            version="v2",
-        )
+        stream = graph.astream_events(graph_input, config=config, version="v2")
         while True:
                 try:
                     event = await asyncio.wait_for(
@@ -241,23 +271,24 @@ async def _event_generator(req: ChatRequest, config: RunnableConfig, stop_event:
                             "output": str(output),
                         }),
                     }
-                    out_text = str(output)
-                    if out_text.startswith("ACTION_REQUIRES_APPROVAL:"):
-                        approval_id = out_text.split(":", 1)[1].strip()
-                        entry = PENDING_APPROVALS.get(approval_id)
-                        if entry:
+                elif kind == "on_chain_stream":
+                    chunk = data.get("chunk")
+                    if isinstance(chunk, dict) and "__interrupt__" in chunk:
+                        for item in chunk["__interrupt__"]:
+                            value = item.value if isinstance(item.value, dict) else {}
+                            awaiting_approval = True
                             yield {
                                 "event": "approval",
                                 "data": json.dumps({
-                                    "approval_id": approval_id,
-                                    "kind": entry["kind"],
-                                    "description": entry["description"],
-                                    "command": entry["params"].get("command"),
-                                    "path": entry["params"].get("path"),
+                                    "approval_id": item.id,
+                                    "kind": value.get("kind"),
+                                    "description": value.get("description"),
+                                    "command": value.get("command"),
+                                    "path": value.get("path"),
                                 }),
                             }
 
-        tracker.close()
+        tracker.close(discard_pending_tools=awaiting_approval)
 
         if assistant_parts:
             await record_message(
@@ -281,13 +312,15 @@ async def _event_generator(req: ChatRequest, config: RunnableConfig, stop_event:
                 time.time() - started,
             )
         else:
+            status = "awaiting_approval" if awaiting_approval else "ok"
             logger.info(
-                "chat end thread=%s tokens=%d elapsed=%.2fs",
+                "chat end thread=%s tokens=%d elapsed=%.2fs status=%s",
                 thread_id,
                 tokens,
                 time.time() - started,
+                status,
             )
-            yield {"event": "end", "data": json.dumps({"status": "ok"})}
+            yield {"event": "end", "data": json.dumps({"status": status})}
     except Exception as exc:
         logger.exception("chat error thread=%s", thread_id)
         yield {"event": "error", "data": json.dumps({"detail": str(exc)})}
@@ -320,6 +353,13 @@ async def chat(req: ChatRequest) -> EventSourceResponse:
         recursion_limit=25,
         configurable={"thread_id": thread_id},
     )
+    graph = await get_graph()
+    state = await graph.aget_state(config)
+    if _pending_interrupts(state):
+        raise HTTPException(
+            status_code=409,
+            detail="A pending approval must be decided before sending a new message",
+        )
     stop_event = _runs.stop_event(thread_id)
     return EventSourceResponse(
         _event_generator(req, config, stop_event),
@@ -337,11 +377,39 @@ async def thread_stop(thread_id: str) -> dict[str, str]:
     return {"status": "stopped"}
 
 
-@app.post("/approvals/{approval_id}")
-async def approval_decision(approval_id: str, req: ApprovalRequest) -> dict:
-    result = await asyncio.to_thread(resolve_approval, approval_id, req.approved, req.allow)
-    logger.info("approval %s approved=%s -> %s", approval_id, req.approved, result["status"])
-    return result
+@app.post("/threads/{thread_id}/resume")
+async def resume_thread(thread_id: str, req: ResumeRequest) -> EventSourceResponse:
+    owned = await thread_workspace_id(thread_id)
+    if owned is None:
+        if not await thread_exists(thread_id):
+            raise HTTPException(status_code=404, detail="Thread not found")
+    elif owned != get_current().id:
+        raise HTTPException(
+            status_code=403, detail="Thread belongs to another workspace"
+        )
+    config = RunnableConfig(
+        recursion_limit=25,
+        configurable={"thread_id": thread_id},
+    )
+    graph = await get_graph()
+    state = await graph.aget_state(config)
+    if not any(
+        p["approval_id"] == req.approval_id for p in _pending_interrupts(state)
+    ):
+        raise HTTPException(
+            status_code=409, detail="No pending approval for this approval_id"
+        )
+    logger.info(
+        "resume request thread=%s id=%s approved=%s",
+        thread_id,
+        req.approval_id,
+        req.approved,
+    )
+    stop_event = _runs.stop_event(thread_id)
+    return EventSourceResponse(
+        _event_generator(req, config, stop_event),
+        headers={"Cache-Control": "no-cache"},
+    )
 
 
 @app.get("/threads")
@@ -371,7 +439,18 @@ async def runs_detail(thread_id: str) -> dict:
 @app.get("/threads/{thread_id}")
 async def thread_detail(thread_id: str) -> dict:
     thread = await _require_thread(thread_id)
-    logger.info("thread fetched id=%s messages=%d", thread_id, len(thread["messages"]))
+    graph = await get_graph()
+    state = await graph.aget_state(
+        RunnableConfig(configurable={"thread_id": thread_id})
+    )
+    pending = _pending_interrupts(state)
+    thread["pending_approval"] = pending[0] if pending else None
+    logger.info(
+        "thread fetched id=%s messages=%d pending_approval=%s",
+        thread_id,
+        len(thread["messages"]),
+        thread["pending_approval"]["approval_id"] if pending else None,
+    )
     return thread
 
 

@@ -1,5 +1,4 @@
 import type {
-  ApprovalDecision,
   BrowseResult,
   FolderEntry,
   RunSummary,
@@ -184,22 +183,8 @@ function parseEvent(raw: string): StreamEvent | null {
   }
 }
 
-export async function* streamChat(
-  message: string,
-  threadId?: string,
-  signal?: AbortSignal,
-): AsyncGenerator<StreamEvent> {
-  const res = await fetch(`${BASE}/chat`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-    body: JSON.stringify({ message, thread_id: threadId }),
-    signal,
-  })
-  if (!res.ok || !res.body) {
-    throw new Error(`Chat request failed: ${res.status}`)
-  }
-
-  const reader = res.body.getReader()
+async function* readSSE(res: Response): AsyncGenerator<StreamEvent> {
+  const reader = res.body!.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
 
@@ -217,14 +202,52 @@ export async function* streamChat(
   }
 }
 
-export function decideApproval(
+async function streamError(res: Response, fallback: string): Promise<Error> {
+  let detail = fallback
+  try {
+    const body = await res.json()
+    detail = body.detail ?? detail
+  } catch {
+    /* keep fallback */
+  }
+  return new Error(detail)
+}
+
+export async function* streamChat(
+  message: string,
+  threadId?: string,
+  signal?: AbortSignal,
+): AsyncGenerator<StreamEvent> {
+  const res = await fetch(`${BASE}/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+    body: JSON.stringify({ message, thread_id: threadId }),
+    signal,
+  })
+  if (!res.ok || !res.body) {
+    throw await streamError(res, `Chat request failed: ${res.status}`)
+  }
+  yield* readSSE(res)
+}
+
+export async function* resumeChat(
+  threadId: string,
   approvalId: string,
   approved: boolean,
   allow?: 'once' | 'always',
-): Promise<ApprovalDecision> {
-  return jsonFetch<ApprovalDecision>(`${BASE}/approvals/${encodeURIComponent(approvalId)}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ approved, allow }),
-  })
+  signal?: AbortSignal,
+): AsyncGenerator<StreamEvent> {
+  const res = await fetch(
+    `${BASE}/threads/${encodeURIComponent(threadId)}/resume`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+      body: JSON.stringify({ approval_id: approvalId, approved, allow }),
+      signal,
+    },
+  )
+  if (!res.ok || !res.body) {
+    throw await streamError(res, `Resume request failed: ${res.status}`)
+  }
+  yield* readSSE(res)
 }

@@ -3,40 +3,57 @@
 File paths supplied by the model are resolved against the active workspace's
 root (POSIX-style root paths count as workspace-root relative) and paths
 escaping the workspace root are rejected. Destructive operations are auto-run
-when an exemption exists for the pattern's workspace, and otherwise register a
-pending approval instead of running.
+when an exemption exists for the pattern's workspace, and otherwise pause the
+graph with `interrupt()` until the user approves or rejects the action.
 """
 
 import os
 import shutil
 
 from langchain_core.tools import tool
+from langgraph.types import interrupt
 
 from . import workspace as ws_mod
-from .approvals import _pending_approval, consume_exemption
+from .approvals import consume_exemption, grant_exception, grant_path_exemption
 from .config import SHELL_TIMEOUT
 from .shell import classify_command, run_shell
+
+
+def _await_approval(payload: dict) -> dict:
+    """Pause the graph until the user decides; returns the resume decision."""
+    decision = interrupt(payload)
+    if not isinstance(decision, dict):
+        return {"approved": False}
+    return decision
 
 
 def resolve_project_path(raw: str) -> str:
     """Resolve a model-supplied path against the active workspace root.
 
     POSIX-style root paths like '/tools_demo' are treated as workspace-root
-    relative (they come from POSIX-trained models). Paths escaping the
-    workspace root are rejected.
+    relative (they come from POSIX-trained models), but an absolute path that
+    already lies inside the workspace root is used as-is so the root is never
+    prefixed twice. Paths escaping the workspace root are rejected.
     """
-    root = ws_mod.get_current().root_path
+    root = os.path.abspath(ws_mod.get_current().root_path)
     raw = os.path.expandvars(os.path.expanduser((raw or "").strip().strip('"')))
     if not raw:
         raise ValueError("empty path")
     if raw.startswith("/") and not raw.startswith("//"):
-        resolved = os.path.normpath(os.path.join(root, raw.lstrip("/")))
+        candidate = os.path.normpath(raw)
+        try:
+            inside = candidate == root or os.path.commonpath([candidate, root]) == root
+        except ValueError:
+            inside = False
+        if inside:
+            resolved = candidate
+        else:
+            resolved = os.path.normpath(os.path.join(root, raw.lstrip("/")))
     elif os.path.isabs(raw):
         resolved = os.path.normpath(raw)
     else:
         resolved = os.path.normpath(os.path.join(root, raw))
     resolved = os.path.abspath(resolved)
-    root = os.path.abspath(root)
     if resolved != root and os.path.commonpath([resolved, root]) != root:
         raise ValueError(f"path resolves outside the workspace root: {raw}")
     return resolved
@@ -129,10 +146,23 @@ def delete_file(path: str) -> str:
             return "ERROR: file not found"
         except Exception as exc:  # noqa: BLE001
             return f"ERROR: could not delete {path}: {exc}"
-    approval_id = _pending_approval(
-        "delete_file", {"path": target}, f"Delete file `{target}`?"
-    )
-    return f"ACTION_REQUIRES_APPROVAL:{approval_id}"
+    decision = _await_approval({
+        "kind": "delete_file",
+        "description": f"Delete file `{target}`?",
+        "path": target,
+        "command": None,
+    })
+    if not decision.get("approved"):
+        return "User rejected this action. Do not retry it; inform the user."
+    if decision.get("allow") == "always":
+        grant_path_exemption("delete_file", target, "always")
+    try:
+        os.remove(target)
+        return f"deleted file {target}"
+    except FileNotFoundError:
+        return "ERROR: file not found"
+    except Exception as exc:  # noqa: BLE001
+        return f"ERROR: could not delete {path}: {exc}"
 
 
 @tool
@@ -150,10 +180,23 @@ def delete_folder(path: str) -> str:
             return "ERROR: folder not found"
         except Exception as exc:  # noqa: BLE001
             return f"ERROR: could not delete {path}: {exc}"
-    approval_id = _pending_approval(
-        "delete_folder", {"path": target}, f"Delete folder `{target}` recursively?"
-    )
-    return f"ACTION_REQUIRES_APPROVAL:{approval_id}"
+    decision = _await_approval({
+        "kind": "delete_folder",
+        "description": f"Delete folder `{target}` recursively?",
+        "path": target,
+        "command": None,
+    })
+    if not decision.get("approved"):
+        return "User rejected this action. Do not retry it; inform the user."
+    if decision.get("allow") == "always":
+        grant_path_exemption("delete_folder", target, "always")
+    try:
+        shutil.rmtree(target)
+        return f"deleted folder {target}"
+    except FileNotFoundError:
+        return "ERROR: folder not found"
+    except Exception as exc:  # noqa: BLE001
+        return f"ERROR: could not delete {path}: {exc}"
 
 
 @tool
@@ -161,12 +204,16 @@ def run_shell_command(command: str) -> str:
     """Run a shell command in the active workspace root. Read-only commands run immediately; anything else requires explicit user approval."""
     cwd = ws_mod.get_current().root_path
     if not classify_command(command):
-        approval_id = _pending_approval(
-            "shell",
-            {"command": command, "cwd": cwd},
-            f"Run shell command `{command}`?",
-        )
-        return f"ACTION_REQUIRES_APPROVAL:{approval_id}"
+        decision = _await_approval({
+            "kind": "shell",
+            "description": f"Run shell command `{command}`?",
+            "command": command,
+            "path": None,
+        })
+        if not decision.get("approved"):
+            return "User rejected this command. Do not retry it; inform the user."
+        if decision.get("allow") == "always":
+            grant_exception(command, "always")
     try:
         code, out = run_shell(command, cwd, timeout=SHELL_TIMEOUT)
         return f"exit {code}\n{out}"

@@ -61,11 +61,8 @@ class RunTracker:
             parts.append(f"{t['name']}: in={t['input']} out={t['output']}")
         return ("[tool results] " + " | ".join(parts))[: self.preview_limit]
 
-    def start_run(self) -> None:
-        if self._current is not None:
-            self._current["ended_at"] = _now()
-            self.runs.append(self._current)
-        self._current = {
+    def _new_run(self) -> dict[str, Any]:
+        return {
             "started_at": _now(),
             "ended_at": None,
             "input_preview": self._round_input_preview(),
@@ -75,6 +72,12 @@ class RunTracker:
             "total_tokens": None,
             "tools": [],
         }
+
+    def start_run(self) -> None:
+        if self._current is not None:
+            self._current["ended_at"] = _now()
+            self.runs.append(self._current)
+        self._current = self._new_run()
 
     def token(self, text: str) -> None:
         if self._current is not None:
@@ -96,6 +99,8 @@ class RunTracker:
         self._current = None
 
     def attach_tool_start(self, name: str | None, args: Any) -> None:
+        if self._current is None and not self.runs:
+            self._current = self._new_run()
         target = self._tool_holder()
         if target is None:
             return
@@ -117,7 +122,18 @@ class RunTracker:
                 t["output"] = str(output)[: self.truncation]
                 return
 
-    def close(self) -> None:
+    def close(self, discard_pending_tools: bool = False) -> None:
+        """Finish the tracker. With discard_pending_tools, drop tool entries whose
+        output never arrived (an approval pause) — the resume stream records them."""
+        if discard_pending_tools:
+            for run in self.runs:
+                run["tools"] = [
+                    t for t in run.get("tools", []) if t.get("output") is not None
+                ]
+            if self._current is not None:
+                self._current["tools"] = [
+                    t for t in self._current.get("tools", []) if t.get("output") is not None
+                ]
         if self._current is not None:
             self._current["ended_at"] = _now()
             self.runs.append(self._current)

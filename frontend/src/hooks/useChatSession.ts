@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { decideApproval, fetchThread, stopChat, streamChat } from '../api'
+import { fetchThread, resumeChat, stopChat, streamChat } from '../api'
 import type { ToolActivity, UiMessage } from '../components/ChatView'
-import type { ApprovalDecision, ApprovalInfo } from '../types'
+import type { ApprovalDecision, ApprovalInfo, StreamEvent } from '../types'
 
 export interface UseChatSessionOptions {
   notify: (message: string, kind?: 'success' | 'error') => void
@@ -83,24 +83,143 @@ export function useChatSession({
     abortRef.current?.abort()
   }, [])
 
-  const handleApproval = useCallback(
-    async (approvalId: string, approved: boolean, allow?: 'always') => {
+  const runStream = useCallback(
+    async (
+      makeGen: (signal: AbortSignal) => AsyncGenerator<StreamEvent>,
+      threadId: string | null,
+    ): Promise<boolean> => {
+      const controller = new AbortController()
+      abortRef.current = controller
+      let currentId = threadId
+      let acc = ''
+      let startedAt = 0
+      let failed = false
+      stoppedRef.current = false
+      streamThreadIdRef.current = null
+      setStreaming(true)
+      setStreamText('')
+      setToolActivity([])
+      setStreamStartedAt(null)
+      setStreamElapsedMs(0)
+
       try {
-        const decision = await decideApproval(approvalId, approved, allow)
-        setApprovalDecisions((prev) => ({ ...prev, [approvalId]: decision }))
-        if (!approved) {
-          notify('Action rejected', 'error')
-        } else if (decision.allow_granted === 'always') {
-          notify('Approved and added to permanent allowlist', 'success')
-        } else {
-          notify('Action approved and executed', 'success')
+        for await (const evt of makeGen(controller.signal)) {
+          switch (evt.event) {
+            case 'start':
+              if (!currentId) {
+                currentId = evt.thread_id
+                setActiveId(evt.thread_id)
+              }
+              streamThreadIdRef.current = currentId
+              startedAt = Date.now()
+              setStreamStartedAt(startedAt)
+              break
+            case 'token':
+              acc += evt.delta
+              setStreamText(acc)
+              break
+            case 'tool_start':
+              setToolActivity((prev) => [...prev, { name: evt.tool }])
+              break
+            case 'tool_end':
+              setToolActivity((prev) =>
+                prev.map((t, i) =>
+                  i === prev.length - 1 && t.name === evt.tool ? { ...t, output: evt.output } : t,
+                ),
+              )
+              break
+            case 'approval':
+              setApprovals((prev) => [
+                ...prev,
+                {
+                  approval_id: evt.approval_id,
+                  kind: evt.kind,
+                  description: evt.description,
+                  command: evt.command,
+                  path: evt.path,
+                },
+              ])
+              break
+            case 'error':
+              throw new Error(evt.detail)
+            case 'end':
+              break
+          }
         }
+
+        const elapsedMs = startedAt ? Date.now() - startedAt : 0
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `a-${Date.now()}`,
+            role: 'assistant',
+            content: acc || '…',
+            createdAt: new Date().toISOString(),
+            meta: { startedAt, elapsedMs },
+          },
+        ])
+        return true
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to resolve approval')
-        notify('Failed to resolve approval', 'error')
+        failed = true
+        if (!controller.signal.aborted) {
+          setError(err instanceof Error ? err.message : 'Chat failed')
+        } else if (stoppedRef.current) {
+          const elapsedMs = startedAt ? Date.now() - startedAt : 0
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: `a-${Date.now()}`,
+              role: 'assistant',
+              content: acc || '…',
+              createdAt: new Date().toISOString(),
+              meta: { startedAt, elapsedMs },
+            },
+          ])
+          setError(null)
+          failed = false
+        } else {
+          failed = false
+        }
+        return !failed
+      } finally {
+        setStreaming(false)
+        setStreamText('')
+        setToolActivity([])
+        setStreamStartedAt(null)
+        setStreamElapsedMs(0)
+        streamThreadIdRef.current = null
+        abortRef.current = null
+        onThreadsChanged()
       }
     },
-    [notify],
+    [onThreadsChanged],
+  )
+
+  const hasPendingApproval = approvals.some((a) => !approvalDecisions[a.approval_id])
+
+  const handleApproval = useCallback(
+    async (approvalId: string, approved: boolean, allow?: 'always') => {
+      const threadId = streamThreadIdRef.current ?? activeId
+      if (!threadId || streaming) return
+      setApprovalDecisions((prev) => ({ ...prev, [approvalId]: { approved, allow } }))
+      const ok = await runStream(
+        (signal) => resumeChat(threadId, approvalId, approved, allow, signal),
+        threadId,
+      )
+      if (ok) {
+        if (!approved) notify('Action rejected', 'error')
+        else if (allow === 'always') notify('Approved; command added to the allowlist', 'success')
+        else notify('Action approved and executed', 'success')
+      } else {
+        setApprovalDecisions((prev) => {
+          const next = { ...prev }
+          delete next[approvalId]
+          return next
+        })
+        notify('Failed to resume the agent after the decision', 'error')
+      }
+    },
+    [activeId, notify, runStream, streaming],
   )
 
   const newChat = useCallback(() => {
@@ -136,122 +255,32 @@ export function useChatSession({
                   : null,
             })),
         )
+        setApprovals(
+          detail.pending_approval ? [detail.pending_approval] : [],
+        )
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load thread')
       }
     },
-    [onNavigateChat, resetSession],
+    [resetSession, onNavigateChat],
   )
 
   const handleSend = useCallback(async () => {
     const text = input.trim()
-    if (!text || streaming) return
+    if (!text || streaming || hasPendingApproval) return
 
     const now = new Date().toISOString()
     setInput('')
     setError(null)
-    setStreamText('')
-    setToolActivity([])
-    setStreamStartedAt(null)
-    setStreamElapsedMs(0)
     setMessages((prev) => [
       ...prev,
       { id: `u-${Date.now()}`, role: 'user', content: text, createdAt: now },
     ])
-    setStreaming(true)
-
-    const controller = new AbortController()
-    abortRef.current = controller
-    let currentId = activeId
-    let acc = ''
-    let startedAt = 0
-    stoppedRef.current = false
-    streamThreadIdRef.current = null
-
-    try {
-      for await (const evt of streamChat(text, currentId ?? undefined, controller.signal)) {
-        switch (evt.event) {
-          case 'start':
-            if (!currentId) {
-              currentId = evt.thread_id
-              setActiveId(evt.thread_id)
-            }
-            streamThreadIdRef.current = currentId
-            startedAt = Date.now()
-            setStreamStartedAt(startedAt)
-            break
-          case 'token':
-            acc += evt.delta
-            setStreamText(acc)
-            break
-          case 'tool_start':
-            setToolActivity((prev) => [...prev, { name: evt.tool }])
-            break
-          case 'tool_end':
-            setToolActivity((prev) =>
-              prev.map((t, i) =>
-                i === prev.length - 1 && t.name === evt.tool ? { ...t, output: evt.output } : t,
-              ),
-            )
-            break
-          case 'approval':
-            setApprovals((prev) => [
-              ...prev,
-              {
-                approval_id: evt.approval_id,
-                kind: evt.kind,
-                description: evt.description,
-                command: evt.command,
-                path: evt.path,
-              },
-            ])
-            break
-          case 'error':
-            throw new Error(evt.detail)
-          case 'end':
-            break
-        }
-      }
-
-      const elapsedMs = startedAt ? Date.now() - startedAt : 0
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `a-${Date.now()}`,
-          role: 'assistant',
-          content: acc || '…',
-          createdAt: new Date().toISOString(),
-          meta: { startedAt, elapsedMs },
-        },
-      ])
-    } catch (err) {
-      if (!controller.signal.aborted) {
-        setError(err instanceof Error ? err.message : 'Chat failed')
-      } else if (stoppedRef.current) {
-        const elapsedMs = startedAt ? Date.now() - startedAt : 0
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: `a-${Date.now()}`,
-            role: 'assistant',
-            content: acc || '…',
-            createdAt: new Date().toISOString(),
-            meta: { startedAt, elapsedMs },
-          },
-        ])
-        setError(null)
-      }
-    } finally {
-      setStreaming(false)
-      setStreamText('')
-      setToolActivity([])
-      setStreamStartedAt(null)
-      setStreamElapsedMs(0)
-      streamThreadIdRef.current = null
-      abortRef.current = null
-      onThreadsChanged()
-    }
-  }, [activeId, input, onThreadsChanged, streaming])
+    await runStream(
+      (signal) => streamChat(text, activeId ?? undefined, signal),
+      activeId,
+    )
+  }, [activeId, hasPendingApproval, input, runStream, streaming])
 
   return {
     activeId,
