@@ -5,6 +5,7 @@ and configures the model, model_supports_tools decides whether to bind tools,
 and get_graph builds the cached LangGraph from those parts.
 """
 
+import asyncio
 import logging
 import os
 
@@ -12,10 +13,24 @@ import httpx
 from langchain_core.messages import SystemMessage
 from langchain_ollama import ChatOllama
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-from langgraph.graph import END, MessagesState, START, StateGraph
+from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 
-from .config import OLLAMA_BASE_URL, OLLAMA_MODEL, SYSTEM_PROMPT
+from .config import (
+    OLLAMA_BASE_URL,
+    OLLAMA_MODEL,
+    PLANNER_MODEL,
+    PLANNER_TIMEOUT,
+    PLANNER_PROMPT,
+    SYSTEM_PROMPT,
+)
+from .graph_state import (
+    AgentState,
+    ExecutionPlan,
+    RESPONDER_INTENTS,
+    fallback_plan,
+    route_intent,
+)
 from .persistence import open_checkpointer
 from .tools import TOOLS
 from .workspace import get_current, load_workspace_guidelines
@@ -42,24 +57,24 @@ def system_prompt_for_current() -> str:
     )
 
 
-def create_llm() -> ChatOllama:
+def create_llm(model: str = OLLAMA_MODEL, bind_tools: bool = True) -> ChatOllama:
     llm = ChatOllama(
-        model=OLLAMA_MODEL,
+        model=model,
         base_url=OLLAMA_BASE_URL,
         temperature=0.2,
         num_predict=1024,
         num_ctx=4096,
     )
-    if model_supports_tools():
+    if bind_tools and model_supports_tools():
         llm = llm.bind_tools(TOOLS)
-        logger.info("Model %s: tool calling enabled", OLLAMA_MODEL)
-    else:
-        logger.info("Model %s: tool calling not supported, chat-only", OLLAMA_MODEL)
+        logger.info("Model %s: tool calling enabled", model)
+    elif bind_tools:
+        logger.info("Model %s: tool calling not supported, chat-only", model)
     return llm
 
 
-def model_supports_tools() -> bool:
-    """Check Ollama's /api/tags for a 'tools' capability on the configured model."""
+def model_supports_tools(model: str = OLLAMA_MODEL) -> bool:
+    """Check Ollama's /api/tags for a 'tools' capability on the given model."""
     if os.getenv("FORCE_TOOLS") == "1":
         return True
     if os.getenv("DISABLE_TOOLS") == "1":
@@ -67,11 +82,11 @@ def model_supports_tools() -> bool:
     try:
         resp = httpx.get(f"{OLLAMA_BASE_URL.rstrip('/')}/api/tags", timeout=5)
         resp.raise_for_status()
-        for model in resp.json().get("models", []):
-            name = model.get("name", "")
+        for entry in resp.json().get("models", []):
+            name = entry.get("name", "")
             # Match "phi3" or "phi3:latest" when configured as "phi3".
-            if name == OLLAMA_MODEL or name.startswith(f"{OLLAMA_MODEL}:"):
-                return "tools" in model.get("capabilities", [])
+            if name == model or name.startswith(f"{model}:"):
+                return "tools" in entry.get("capabilities", [])
     except Exception:
         pass
     # Assume tool support if Ollama cannot be inspected; degrade gracefully on 400.
@@ -79,21 +94,79 @@ def model_supports_tools() -> bool:
 
 
 def _agent_node(llm: ChatOllama) -> callable:
-    def agent(state: MessagesState) -> dict:
+    def agent(state: AgentState) -> dict:
         messages = [SystemMessage(content=system_prompt_for_current()), *state["messages"]]
-        return {"messages": [llm.invoke(messages)]}
+        return {
+            "messages": [llm.invoke(messages)],
+            "current_agent": "agent",
+            "agent_status": "running",
+        }
 
     return agent
 
 
+def _planner_node(structured_planner) -> callable:
+    async def planner(state: AgentState) -> dict:
+        messages = [SystemMessage(content=PLANNER_PROMPT), *state["messages"]]
+        try:
+            plan = await asyncio.wait_for(
+                structured_planner.ainvoke(messages), timeout=PLANNER_TIMEOUT
+            )
+            if not isinstance(plan, ExecutionPlan):
+                plan = ExecutionPlan.model_validate(plan)
+        except Exception as exc:  # noqa: BLE001 - planner must never block a reply
+            logger.warning("planner failed: %s", exc)
+            fallback = fallback_plan(type(exc).__name__)
+            return {
+                "detected_intent": fallback.intent,
+                "execution_plan": fallback.model_dump(),
+                "current_agent": "agent",
+                "agent_status": "planning_failed",
+                "errors": [f"planner: {exc}"],
+            }
+        logger.info("planner intent=%s steps=%d", plan.intent, len(plan.steps))
+        return {
+            "detected_intent": plan.intent,
+            "execution_plan": plan.model_dump(),
+            "current_agent": "responder" if plan.intent in RESPONDER_INTENTS else "agent",
+            "agent_status": "planned",
+            "clarification_needed": plan.needs_clarification,
+        }
+
+    return planner
+
+
+def _responder_node(llm: ChatOllama) -> callable:
+    def responder(state: AgentState) -> dict:
+        messages = [SystemMessage(content=system_prompt_for_current()), *state["messages"]]
+        return {
+            "messages": [llm.invoke(messages)],
+            "current_agent": "responder",
+            "agent_status": "done",
+        }
+
+    return responder
+
+
 def _build_graph(checkpointer: AsyncSqliteSaver):
     llm = create_llm()
+    responder_llm = create_llm(bind_tools=False)
+    planner_llm = create_llm(PLANNER_MODEL, bind_tools=False)
+    structured_planner = planner_llm.with_structured_output(ExecutionPlan)
 
-    graph = StateGraph(MessagesState)
+    graph = StateGraph(AgentState)
+    graph.add_node("planner", _planner_node(structured_planner))
+    graph.add_node("responder", _responder_node(responder_llm))
     graph.add_node("agent", _agent_node(llm))
     graph.add_node("tools", ToolNode(TOOLS))
 
-    graph.add_edge(START, "agent")
+    graph.add_edge(START, "planner")
+    graph.add_conditional_edges(
+        "planner",
+        route_intent,
+        {"responder": "responder", "agent": "agent"},
+    )
+    graph.add_edge("responder", END)
     graph.add_conditional_edges("agent", tools_condition)
     graph.add_edge("tools", "agent")
     graph.add_edge("agent", END)

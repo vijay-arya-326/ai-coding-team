@@ -271,6 +271,16 @@ async def _event_generator(
                             "output": str(output),
                         }),
                     }
+                elif kind == "on_chain_end" and event.get("name") == "planner":
+                    out = data.get("output")
+                    if isinstance(out, dict) and out.get("detected_intent"):
+                        yield {
+                            "event": "plan",
+                            "data": json.dumps({
+                                "intent": out.get("detected_intent"),
+                                "plan": out.get("execution_plan"),
+                            }),
+                        }
                 elif kind == "on_chain_stream":
                     chunk = data.get("chunk")
                     if isinstance(chunk, dict) and "__interrupt__" in chunk:
