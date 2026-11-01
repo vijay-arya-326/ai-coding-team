@@ -52,6 +52,7 @@ class AgentState(MessagesState):
     instead of large contents or binary data.
     """
 
+    chat_type: str
     detected_intent: str
     execution_plan: dict | None
     current_agent: str
@@ -88,6 +89,9 @@ class ExecutionPlan(BaseModel):
 
 def route_intent(state: AgentState) -> str:
     """Map the detected intent to the next node name."""
+    # Normal chats are general assistant chats: never use tools.
+    if state.get("chat_type") == "normal":
+        return NODE_RESPONDER
     if state.get("detected_intent") in RESPONDER_INTENTS:
         return NODE_RESPONDER
     return NODE_AGENT

@@ -31,6 +31,7 @@ from app.agent import (
     GENERATION_IDLE_TIMEOUT,
     OLLAMA_MODEL,
     activate_workspace,
+    clear_active_workspace,
     close_checkpointer,
     create_workspace,
     delete_thread,
@@ -116,6 +117,7 @@ class ResumeRequest(BaseModel):
 class WorkspaceCreateRequest(BaseModel):
     name: str
     root_path: str
+    config: dict | None = None
 
 
 class WorkspaceMkdirRequest(BaseModel):
@@ -454,16 +456,20 @@ async def resume_thread(thread_id: str, req: ResumeRequest) -> EventSourceRespon
 
 
 @app.get("/threads")
-async def threads() -> list[dict]:
-    result = await list_threads(workspace_id=get_current().id)
-    logger.info("threads listed count=%d ws=%s", len(result), get_current().id)
+async def threads(all: bool = False) -> list[dict]:
+    if all:
+        result = await list_threads(all_workspaces=True)
+    else:
+        result = await list_threads(workspace_id=get_current().id)
+    logger.info("threads listed count=%d all=%s", len(result), all)
     return result
 
 
 @app.get("/runs")
-async def runs_list() -> list[dict]:
-    result = await runs_summary(workspace_id=get_current().id)
-    logger.info("runs summary count=%d ws=%s", len(result), get_current().id)
+async def runs_list(workspace_id: str | None = None) -> list[dict]:
+    ws = workspace_id if workspace_id is not None else get_current().id
+    result = await runs_summary(workspace_id=ws)
+    logger.info("runs summary count=%d ws=%s", len(result), ws)
     return result
 
 
@@ -614,7 +620,7 @@ async def workspaces_list() -> list[dict]:
 @app.post("/workspaces")
 async def workspaces_create(req: WorkspaceCreateRequest) -> dict:
     try:
-        ws = await create_workspace(req.name, req.root_path)
+        ws = await create_workspace(req.name, req.root_path, req.config)
     except ValueError as exc:
         logger.info("workspace create rejected: %s", exc)
         raise HTTPException(status_code=400, detail=str(exc))
@@ -683,6 +689,12 @@ async def workspace_activate(ws_id: str) -> dict:
         "root_path": ws.root_path,
         "is_default": ws.is_default,
     }
+
+
+@app.post("/workspaces/clear-active")
+async def workspace_clear_active() -> dict:
+    await clear_active_workspace()
+    return {"status": "cleared"}
 
 
 if __name__ == "__main__":

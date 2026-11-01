@@ -242,20 +242,6 @@ async def list_workspaces() -> list[Workspace]:
     workspaces = [_row_to_workspace(r) for r in rows]
     for ws in workspaces:
         ws.config = load_workspace_config(ws.root_path) or ws.config
-    if not workspaces or not any(w.is_default for w in workspaces):
-        cfg = load_workspace_config(PROJECT_ROOT)
-        workspaces.insert(
-            0,
-            Workspace(
-                id=DEFAULT_WORKSPACE_ID,
-                name="Default",
-                root_path=PROJECT_ROOT,
-                config=cfg,
-                is_default=True,
-                created_at=_now(),
-                updated_at=_now(),
-            ),
-        )
     return workspaces
 
 
@@ -283,14 +269,29 @@ async def workspace_by_root(root: str) -> Workspace | None:
     return _row_to_workspace(row) if row else None
 
 
-async def create_workspace(name: str, root_path: str) -> Workspace:
+DEFAULT_SAFE_COMMANDS = [
+    "npm test",
+    "npm run lint",
+    "npm run build",
+    "pytest",
+    "uv run pytest",
+    "git status",
+    "git diff",
+    "ls",
+    "cat",
+]
+
+async def create_workspace(name: str, root_path: str, config: dict[str, Any] | None = None) -> Workspace:
     root = os.path.abspath(root_path)
     if not os.path.isdir(root):
         raise ValueError(f"workspace root does not exist: {root}")
     existing = await workspace_by_root(root)
     if existing is not None:
         raise ValueError(f"a workspace already exists for {root}")
-    ws = make_workspace(name=name, root_path=root)
+    cfg = dict(config or {})
+    if not cfg.get("safe_commands"):
+        cfg["safe_commands"] = list(DEFAULT_SAFE_COMMANDS)
+    ws = make_workspace(name=name, root_path=root, config=cfg)
     now = _now()
     conn = await _meta_conn()
     await conn.execute(
@@ -299,8 +300,11 @@ async def create_workspace(name: str, root_path: str) -> Workspace:
         (ws.id, ws.name, ws.root_path, json.dumps(ws.config), now, now),
     )
     await conn.commit()
-    # Preserve any migrated legacy config instead of clobbering it with {}.
-    save_workspace_config(ws.root_path, load_workspace_config(ws.root_path) or {})
+    # Persist the provided config (merged with any migrated legacy config).
+    merged = load_workspace_config(ws.root_path) or {}
+    merged.update(cfg)
+    save_workspace_config(ws.root_path, merged)
+    ws.config = merged
     if not os.path.exists(guidelines_path(ws.root_path)):
         save_workspace_guidelines(ws.root_path, GUIDELINES_TEMPLATE)
     logger.info("workspace created id=%s root=%s", ws.id, ws.root_path)
@@ -352,12 +356,28 @@ async def delete_workspace(ws_id: str) -> bool:
     ws = await get_workspace(ws_id)
     if ws is None or ws.is_default:
         return False
+    from .persistence import open_checkpointer
     conn = await _meta_conn()
+    cur = await conn.execute(
+        "SELECT thread_id FROM thread_meta WHERE workspace_id = ?", (ws_id,)
+    )
+    thread_ids = [r[0] for r in await cur.fetchall()]
+    for tid in thread_ids:
+        await conn.execute("DELETE FROM thread_messages WHERE thread_id = ?", (tid,))
+        await conn.execute("DELETE FROM thread_runs WHERE thread_id = ?", (tid,))
+        await conn.execute("DELETE FROM thread_meta WHERE thread_id = ?", (tid,))
+    await conn.commit()
+    saver = await open_checkpointer()
+    for tid in thread_ids:
+        try:
+            await saver.adelete_thread(tid)
+        except Exception:
+            logger.exception("failed to delete checkpoint thread=%s", tid)
     await conn.execute("DELETE FROM workspaces WHERE id = ?", (ws_id,))
     await conn.commit()
     if (await _get_setting("active_workspace_id")) == ws_id:
         await activate_workspace(DEFAULT_WORKSPACE_ID)
-    logger.info("workspace deleted id=%s", ws_id)
+    logger.info("workspace deleted id=%s threads=%d", ws_id, len(thread_ids))
     return True
 
 
@@ -369,3 +389,9 @@ async def activate_workspace(ws_id: str) -> Workspace:
     set_current(ws)
     logger.info("workspace activated id=%s root=%s", ws.id, ws.root_path)
     return ws
+
+
+async def clear_active_workspace() -> None:
+    await _set_setting("active_workspace_id", "")
+    set_current(None)
+    logger.info("active workspace cleared")
