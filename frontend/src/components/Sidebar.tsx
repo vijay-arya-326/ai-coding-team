@@ -26,7 +26,7 @@ interface SidebarProps {
   onDelete: (threadId: string) => void
   onWorkspaceChange: (workspaceId: string) => void
   onSelectWorkspace: (workspaceId: string) => void
-  onCreateWorkspace: (name: string, rootPath: string) => Promise<void>
+  onCreateWorkspace: (name: string, rootPath: string, config?: Record<string, unknown>) => Promise<void>
   onActivateWorkspace: (workspaceId: string) => Promise<void>
   onDeleteWorkspace: (workspaceId: string) => Promise<void>
 }
@@ -98,6 +98,7 @@ export default function Sidebar({
 }: SidebarProps) {
   const [wsNewName, setWsNewName] = useState('')
   const [wsNewRoot, setWsNewRoot] = useState('')
+  const [wsNewSafe, setWsNewSafe] = useState('')
   const [wsCreating, setWsCreating] = useState(false)
   const [wsPickerOpen, setWsPickerOpen] = useState(false)
   const activeWsId = workspaces.find((w) => w.active)?.id ?? 'default'
@@ -107,14 +108,21 @@ export default function Sidebar({
     workspaces.find((w) => w.is_default)?.id ??
     workspaces[0]?.id ??
     null
-  const visible = threads.filter(
-    (t) => (t.workspace_id ?? 'default') === activeWsId && t.archived === showArchived,
+  const wsThreads = threads.filter(
+    (t) => (t.workspace_id ?? 'default') === activeWsId,
   )
+  const visible = threads.filter((t) => {
+    const ws = t.workspace_id ?? 'default'
+    if (selectedWorkspaceId === null) {
+      return (ws === 'default' || !t.workspace_id) && t.archived === showArchived
+    }
+    return ws === activeWsId && t.archived === showArchived
+  })
   const hasOtherWsThreads = threads.some(
     (t) => (t.workspace_id ?? 'default') !== activeWsId,
   )
-  const activeCount = visible.filter((t) => !t.archived).length
-  const archivedCount = visible.length - activeCount
+  const activeCount = wsThreads.filter((t) => !t.archived).length
+  const archivedCount = wsThreads.filter((t) => t.archived).length
 
   return (
     <aside className="flex w-80 shrink-0 flex-col bg-[#1f2430] text-slate-200">
@@ -139,7 +147,7 @@ export default function Sidebar({
             }`}
             onClick={() => onViewChange('runs')}
           >
-            ▤ Runs
+            ▤ Traces...
           </button>
           <button
             className={`flex-1 cursor-pointer rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors ${
@@ -155,7 +163,7 @@ export default function Sidebar({
         {view !== 'workspaces' && (
           <WorkspaceSelector
             workspaces={workspaces}
-            activeId={workspaces.find((w) => w.active)?.id ?? activeId}
+            activeId={selectedWorkspaceId === null ? '__general__' : (selectedWorkspaceId ?? (workspaces.find((w) => w.active)?.id ?? null))}
             disabled={disabled}
             onChange={onWorkspaceChange}
           />
@@ -231,15 +239,24 @@ export default function Sidebar({
                   Browse…
                 </button>
               </div>
+              <textarea
+                className="mt-2 w-full rounded-md border border-white/10 bg-black/30 px-3 py-1.5 text-sm text-slate-100 outline-none focus:border-indigo-500"
+                placeholder="Safe commands (one per line)"
+                value={wsNewSafe}
+                onChange={(e) => setWsNewSafe(e.target.value)}
+                rows={2}
+              />
               <button
                 className="mt-2 w-full cursor-pointer rounded-md bg-indigo-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-600 disabled:cursor-not-allowed disabled:opacity-60"
                 disabled={wsCreating || !wsNewName.trim() || !wsNewRoot.trim()}
                 onClick={() => {
                   setWsCreating(true)
-                  void onCreateWorkspace(wsNewName.trim(), wsNewRoot.trim()).finally(() => {
+                  const safe = wsNewSafe.split('\\n').map((s) => s.trim()).filter(Boolean)
+                  void onCreateWorkspace(wsNewName.trim(), wsNewRoot.trim(), { safe_commands: safe }).finally(() => {
                     setWsCreating(false)
                     setWsNewName('')
                     setWsNewRoot('')
+                    setWsNewSafe('')
                   })
                 }}
               >
@@ -345,7 +362,7 @@ export default function Sidebar({
                 >
                   <span className="truncate text-slate-100">{threadLabel(thread)}</span>
                   <span className="truncate text-xs text-slate-400">
-                    {thread.message_count} messages · {formatTimestamp(thread.updated_at)}
+                    {thread.chat_type === 'normal' ? 'Chat' : 'Project'} · {thread.message_count} messages · {formatTimestamp(thread.updated_at)}
                   </span>
                 </button>
                 <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">

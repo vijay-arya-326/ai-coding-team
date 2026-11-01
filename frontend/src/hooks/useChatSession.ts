@@ -7,11 +7,14 @@ export interface UseChatSessionOptions {
   notify: (message: string, kind?: 'success' | 'error') => void
   onNavigateChat: () => void
   onThreadsChanged: () => void
+  onRunsChanged?: () => void
 }
 
 export interface ChatSession {
   activeId: string | null
   setActiveId: (id: string | null) => void
+  chatType: 'normal' | 'workspace'
+  setChatType: (value: 'normal' | 'workspace') => void
   messages: UiMessage[]
   input: string
   setInput: (value: string) => void
@@ -35,8 +38,10 @@ export function useChatSession({
   notify,
   onNavigateChat,
   onThreadsChanged,
+  onRunsChanged,
 }: UseChatSessionOptions): ChatSession {
   const [activeId, setActiveId] = useState<string | null>(null)
+  const [chatType, setChatType] = useState<'normal' | 'workspace'>('normal')
   const [messages, setMessages] = useState<UiMessage[]>([])
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
@@ -190,9 +195,10 @@ export function useChatSession({
         streamThreadIdRef.current = null
         abortRef.current = null
         onThreadsChanged()
+        onRunsChanged?.()
       }
     },
-    [onThreadsChanged],
+    [onRunsChanged, onThreadsChanged],
   )
 
   const hasPendingApproval = approvals.some((a) => !approvalDecisions[a.approval_id])
@@ -225,6 +231,7 @@ export function useChatSession({
   const newChat = useCallback(() => {
     resetSession()
     setActiveId(null)
+    setChatType('normal')
     onNavigateChat()
   }, [onNavigateChat, resetSession])
 
@@ -235,6 +242,7 @@ export function useChatSession({
       onNavigateChat()
       try {
         const detail = await fetchThread(threadId)
+        if (detail.chat_type === 'normal' || detail.chat_type === 'workspace') setChatType(detail.chat_type)
         setMessages(
           detail.messages
             .filter(
@@ -277,14 +285,16 @@ export function useChatSession({
       { id: `u-${Date.now()}`, role: 'user', content: text, createdAt: now },
     ])
     await runStream(
-      (signal) => streamChat(text, activeId ?? undefined, signal),
+      (signal) => streamChat(text, activeId ?? undefined, chatType, signal),
       activeId,
     )
-  }, [activeId, hasPendingApproval, input, runStream, streaming])
+  }, [activeId, chatType, hasPendingApproval, input, runStream, streaming])
 
   return {
     activeId,
     setActiveId,
+    chatType,
+    setChatType,
     messages,
     input,
     setInput,

@@ -11,6 +11,7 @@ export interface ThreadSummary {
   title: string | null
   archived: boolean
   workspace_id: string | null
+  chat_type: string | null
   message_count: number
   created_at: string | null
   updated_at: string | null
@@ -23,6 +24,7 @@ export interface ThreadDetail {
   title: string | null
   archived: boolean
   workspace_id: string | null
+  chat_type: string | null
   created_at: string | null
   updated_at: string | null
   messages: MessageDto[]

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   activateWorkspace,
+  clearActiveWorkspace,
   createWorkspace,
   deleteThread,
   deleteWorkspace,
@@ -34,18 +35,16 @@ export default function App() {
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null)
 
   const selectedWorkspace =
-    workspaces.find((w) => w.id === selectedWorkspaceId) ??
-    workspaces.find((w) => w.active) ??
-    workspaces.find((w) => w.is_default) ??
-    workspaces[0] ??
-    null
+    selectedWorkspaceId !== null
+      ? (workspaces.find((w) => w.id === selectedWorkspaceId) ?? null)
+      : null
 
   const { toasts, notify, dismiss } = useToasts()
 
   const viewChat = useCallback(() => setView('chat'), [])
   const refreshThreads = useCallback(async () => {
     try {
-      setThreads(await fetchThreads())
+      setThreads(await fetchThreads(true))
     } catch {
       /* keep previous list */
     }
@@ -68,12 +67,24 @@ const chat = useChatSession({
     notify,
     onNavigateChat: viewChat,
     onThreadsChanged: () => void refreshThreads(),
+    onRunsChanged: () => void refreshRuns(),
   })
   const { activeId, newChat, reportError } = chat
 
-const refreshRuns = useCallback(async (reset = false) => {
+  useEffect(() => {
+    chat.setChatType(selectedWorkspace ? 'workspace' : 'normal')
+  }, [selectedWorkspace, chat])
+
+  useEffect(() => {
+    if (chat.chatType === 'workspace' && !selectedWorkspace) {
+      setView('workspaces')
+      notify('Select or create a workspace for Project chat', 'error')
+    }
+  }, [chat.chatType, selectedWorkspace, notify])
+
+const refreshRuns = useCallback(async (reset = false, workspaceId?: string | null) => {
     try {
-      const data = await fetchRunsSummary()
+      const data = await fetchRunsSummary(workspaceId ?? undefined)
       setRunSummaries(data)
       setSelectedRunId((prev) =>
         reset
@@ -94,7 +105,7 @@ const refreshRuns = useCallback(async (reset = false) => {
 const handleViewChange = useCallback(
     (v: 'chat' | 'runs' | 'workspaces') => {
       setView(v)
-      if (v === 'runs') void refreshRuns()
+      if (v === 'runs') void refreshRuns(true, selectedWorkspaceId ?? 'default')
       if (v === 'workspaces') void refreshWorkspaces()
     },
     [refreshRuns, refreshWorkspaces],
@@ -102,26 +113,39 @@ const handleViewChange = useCallback(
 
   const handleActivateWorkspace = useCallback(
     async (workspaceId: string) => {
+      if (workspaceId === '__general__') {
+        const previousView = view
+        await clearActiveWorkspace()
+        setSelectedWorkspaceId(null)
+        newChat()
+        void refreshRuns(true, 'default')
+        if (previousView === 'runs') setView('runs')
+        notify('General Chat selected')
+        return
+      }
+      setSelectedWorkspaceId(workspaceId)
       if (workspaceId === activeId && workspaces.find((w) => w.id === workspaceId)?.active) return
+      const previousView = view
       try {
         await activateWorkspace(workspaceId)
         await refreshWorkspaces()
         await refreshThreads()
         await refreshRuns(true)
         newChat()
+        if (previousView === 'runs') setView('runs')
         notify('Workspace activated')
       } catch (err) {
         reportError(err instanceof Error ? err.message : 'Failed to activate workspace')
         notify('Failed to activate workspace', 'error')
       }
     },
-    [activeId, workspaces, refreshWorkspaces, refreshThreads, refreshRuns, newChat, notify, reportError],
+    [activeId, view, workspaces, refreshWorkspaces, refreshThreads, refreshRuns, newChat, notify, reportError],
   )
 
   const handleCreateWorkspace = useCallback(
-    async (name: string, rootPath: string) => {
+    async (name: string, rootPath: string, config?: Record<string, unknown>) => {
       try {
-        await createWorkspace(name, rootPath)
+        await createWorkspace(name, rootPath, config)
         await refreshWorkspaces()
         notify('Workspace created')
       } catch (err) {
@@ -267,6 +291,10 @@ await deleteThread(threadId)
         />
       ) : view === 'runs' ? (
         <RunsView summaries={runSummaries} selectedId={selectedRunId} />
+      ) : chat.chatType === 'workspace' && !selectedWorkspace ? (
+        <div className="flex flex-1 items-center justify-center text-slate-500">
+          <p>Select or create a workspace in Spaces to use Project chat.</p>
+        </div>
       ) : (
         <ChatView
           messages={chat.messages}

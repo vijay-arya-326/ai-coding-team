@@ -24,11 +24,12 @@ export default function WorkspaceSelector({
       <select
         id="workspace-select"
         className="min-w-0 flex-1 cursor-pointer rounded-md border border-white/10 bg-black/30 px-2 py-1.5 text-xs text-slate-100 outline-none focus:border-indigo-500 disabled:cursor-not-allowed disabled:opacity-60"
-        value={activeId ?? 'default'}
+        value={activeId ?? '__general__'}
         disabled={disabled}
         onChange={(e) => onChange(e.target.value)}
         title="Switch workspace — new chats run in this workspace"
       >
+        <option value="__general__">General Chat</option>
         {workspaces.map((ws) => (
           <option key={ws.id} value={ws.id}>
             {ws.name}

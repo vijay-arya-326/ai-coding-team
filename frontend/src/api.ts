@@ -28,12 +28,13 @@ async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>
 }
 
-export function fetchThreads(): Promise<ThreadSummary[]> {
-  return jsonFetch<ThreadSummary[]>(`${BASE}/threads`)
+export function fetchThreads(all = false): Promise<ThreadSummary[]> {
+  return jsonFetch<ThreadSummary[]>(`${BASE}/threads${all ? '?all=true' : ''}`)
 }
 
-export function fetchRunsSummary(): Promise<RunSummary[]> {
-  return jsonFetch<RunSummary[]>(`${BASE}/runs`)
+export function fetchRunsSummary(workspaceId?: string | null): Promise<RunSummary[]> {
+  const q = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : ''
+  return jsonFetch<RunSummary[]>(`${BASE}/runs${q}`)
 }
 
 export function fetchThreadRuns(threadId: string): Promise<ThreadRuns> {
@@ -75,11 +76,12 @@ export function fetchWorkspaces(): Promise<Workspace[]> {
 export function createWorkspace(
   name: string,
   rootPath: string,
+  config?: Record<string, unknown>,
 ): Promise<Workspace> {
   return jsonFetch<Workspace>(`${BASE}/workspaces`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, root_path: rootPath }),
+    body: JSON.stringify({ name, root_path: rootPath, config }),
   })
 }
 
@@ -109,6 +111,10 @@ export function activateWorkspace(workspaceId: string): Promise<Workspace> {
   )
 }
 
+export function clearActiveWorkspace(): Promise<void> {
+  return jsonFetch<{ status: string }>(`${BASE}/workspaces/clear-active`, { method: 'POST' }).then(() => undefined)
+}
+
 export function browseFolders(path?: string): Promise<BrowseResult> {
   const qs = path ? `?path=${encodeURIComponent(path)}` : ''
   return jsonFetch<BrowseResult>(`${BASE}/workspaces/browse${qs}`)
@@ -128,13 +134,14 @@ export function formatTimestamp(iso: string | null): string {
   if (Number.isNaN(date.getTime())) return ''
   const sameDay = date.toDateString() === new Date().toDateString()
   if (sameDay) {
-    return date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+    return date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', hour12: true })
   }
   return date.toLocaleString(undefined, {
     month: 'short',
     day: 'numeric',
     hour: 'numeric',
     minute: '2-digit',
+    hour12: true,
   })
 }
 
@@ -216,12 +223,13 @@ async function streamError(res: Response, fallback: string): Promise<Error> {
 export async function* streamChat(
   message: string,
   threadId?: string,
+  chatType?: 'normal' | 'workspace',
   signal?: AbortSignal,
 ): AsyncGenerator<StreamEvent> {
   const res = await fetch(`${BASE}/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-    body: JSON.stringify({ message, thread_id: threadId }),
+    body: JSON.stringify({ message, thread_id: threadId, chat_type: chatType }),
     signal,
   })
   if (!res.ok || !res.body) {
