@@ -6,6 +6,7 @@ and get_graph builds the cached LangGraph from those parts.
 """
 
 import asyncio
+import json
 import logging
 import os
 
@@ -93,11 +94,30 @@ def model_supports_tools(model: str = OLLAMA_MODEL) -> bool:
     return True
 
 
+def _clean_json_leak(content: str) -> str:
+    text = (content or "").strip()
+    if not (text.startswith("{") and text.endswith("}")):
+        return content
+    try:
+        data = json.loads(text)
+    except Exception:
+        return content
+    if isinstance(data, dict):
+        if data.get("clarification_question"):
+            return str(data["clarification_question"])
+        if "intent" in data:
+            return "How can I help you today?"
+    return content
+
+
 def _agent_node(llm: ChatOllama) -> callable:
     def agent(state: AgentState) -> dict:
         messages = [SystemMessage(content=system_prompt_for_current()), *state["messages"]]
+        msg = llm.invoke(messages)
+        if hasattr(msg, "content") and isinstance(msg.content, str):
+            msg.content = _clean_json_leak(msg.content)
         return {
-            "messages": [llm.invoke(messages)],
+            "messages": [msg],
             "current_agent": "agent",
             "agent_status": "running",
         }
@@ -139,8 +159,11 @@ def _planner_node(structured_planner) -> callable:
 def _responder_node(llm: ChatOllama) -> callable:
     def responder(state: AgentState) -> dict:
         messages = [SystemMessage(content=system_prompt_for_current()), *state["messages"]]
+        msg = llm.invoke(messages)
+        if hasattr(msg, "content") and isinstance(msg.content, str):
+            msg.content = _clean_json_leak(msg.content)
         return {
-            "messages": [llm.invoke(messages)],
+            "messages": [msg],
             "current_agent": "responder",
             "agent_status": "done",
         }

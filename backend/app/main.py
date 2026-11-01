@@ -99,6 +99,7 @@ async def security_headers(request: Request, call_next):
 class ChatRequest(BaseModel):
     message: str
     thread_id: str | None = None
+    chat_type: str | None = None
 
 
 class ThreadUpdateRequest(BaseModel):
@@ -199,9 +200,10 @@ async def _event_generator(
             stream_started_at = _now()
         else:
             logger.info("chat start thread=%s message=%r", thread_id, req.message[:200])
-            await ensure_thread_meta(thread_id, req.message, ws_id)
+            chat_type = req.chat_type if getattr(req, "chat_type", None) in ("normal", "workspace") else "workspace"
+            await ensure_thread_meta(thread_id, req.message, ws_id, chat_type=chat_type)
             await record_message(thread_id, "user", req.message, _now())
-            graph_input = {"messages": [HumanMessage(content=req.message)]}
+            graph_input = {"messages": [HumanMessage(content=req.message)], "chat_type": chat_type}
             stream_started_at = _now()
         yield {"event": "start", "data": json.dumps({"thread_id": thread_id})}
 
@@ -236,10 +238,13 @@ async def _event_generator(
                         tokens += 1
                         assistant_parts.append(text)
                         tracker.token(text)
-                        yield {
-                            "event": "token",
-                            "data": json.dumps({"delta": text}),
-                        }
+                        accumulated = "".join(assistant_parts).lstrip()
+                        # Buffer JSON-looking output so it never streams to the UI.
+                        if not accumulated.startswith("{"):
+                            yield {
+                                "event": "token",
+                                "data": json.dumps({"delta": text}),
+                            }
                 elif kind == "on_chat_model_end":
                     usage = None
                     out = data.get("output")
@@ -298,13 +303,39 @@ async def _event_generator(
                                 }),
                             }
 
+        # If the model produced a JSON plan, emit the cleaned text now.
+        final_text = "".join(assistant_parts).strip()
+        if final_text.startswith("{") and final_text.endswith("}"):
+            try:
+                data = json.loads(final_text)
+                if isinstance(data, dict):
+                    if data.get("clarification_question"):
+                        final_text = str(data["clarification_question"])
+                    elif "intent" in data:
+                        final_text = "How can I help you today?"
+            except Exception:
+                pass
+            if final_text and final_text != "".join(assistant_parts).strip():
+                yield {"event": "token", "data": json.dumps({"delta": final_text})}
+
         tracker.close(discard_pending_tools=awaiting_approval)
 
         if assistant_parts:
+            final_text = "".join(assistant_parts).strip()
+            if final_text.startswith("{") and final_text.endswith("}"):
+                try:
+                    data = json.loads(final_text)
+                    if isinstance(data, dict):
+                        if data.get("clarification_question"):
+                            final_text = str(data["clarification_question"])
+                        elif "intent" in data:
+                            final_text = "How can I help you today?"
+                except Exception:
+                    pass
             await record_message(
                 thread_id,
                 "assistant",
-                "".join(assistant_parts),
+                final_text,
                 _now(),
                 stream_started_at=stream_started_at,
                 stream_elapsed_ms=max(0, round((time.time() - started) * 1000)),
