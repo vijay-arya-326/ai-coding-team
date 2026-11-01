@@ -224,12 +224,13 @@ export async function* streamChat(
   message: string,
   threadId?: string,
   chatType?: 'normal' | 'workspace',
+  attachments?: { name: string; type: string; data: string }[],
   signal?: AbortSignal,
 ): AsyncGenerator<StreamEvent> {
   const res = await fetch(`${BASE}/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-    body: JSON.stringify({ message, thread_id: threadId, chat_type: chatType }),
+    body: JSON.stringify({ message, thread_id: threadId, chat_type: chatType, attachments }),
     signal,
   })
   if (!res.ok || !res.body) {

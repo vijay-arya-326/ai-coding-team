@@ -29,6 +29,34 @@ def effective_workspace_id(ws_id: str | None) -> str:
     return ws_id or DEFAULT_WORKSPACE_ID
 
 
+async def record_thread_attachments(thread_id: str, attachments: list[dict[str, Any]]) -> None:
+    """Store one thread's attachment metadata (name/path/mime/size) as JSON."""
+    if not attachments:
+        return
+    conn = await _meta_conn()
+    await conn.execute(
+        "UPDATE thread_meta SET attachments = ? WHERE thread_id = ?",
+        (json.dumps(attachments, ensure_ascii=False), thread_id),
+    )
+    await conn.commit()
+
+
+async def get_thread_attachments(thread_id: str) -> list[dict[str, Any]]:
+    """Return a thread's saved attachment metadata (empty when none)."""
+    conn = await _meta_conn()
+    cur = await conn.execute(
+        "SELECT attachments FROM thread_meta WHERE thread_id = ?", (thread_id,)
+    )
+    row = await cur.fetchone()
+    if not row or not row[0]:
+        return []
+    try:
+        data = json.loads(row[0])
+        return data if isinstance(data, list) else []
+    except (ValueError, TypeError):
+        return []
+
+
 # Re-exported for callers that built on the old flat surface.
 close_checkpointer = _close_db
 meta_conn = _meta_conn
@@ -81,6 +109,7 @@ async def record_message(
     created_at: str,
     stream_started_at: str | None = None,
     stream_elapsed_ms: int | None = None,
+    attachments: list[dict[str, Any]] | None = None,
 ) -> None:
     """Persist one user/assistant message with its timestamp for display.
 
@@ -92,9 +121,17 @@ async def record_message(
     conn = await _meta_conn()
     await conn.execute(
         "INSERT INTO thread_messages"
-        " (thread_id, role, content, created_at, stream_started_at, stream_elapsed_ms)"
-        " VALUES (?, ?, ?, ?, ?, ?)",
-        (thread_id, role, content, created_at, stream_started_at, stream_elapsed_ms),
+        " (thread_id, role, content, created_at, stream_started_at, stream_elapsed_ms, attachments)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            thread_id,
+            role,
+            content,
+            created_at,
+            stream_started_at,
+            stream_elapsed_ms,
+            json.dumps(attachments, ensure_ascii=False) if attachments else None,
+        ),
     )
     await conn.commit()
 
@@ -314,23 +351,30 @@ async def update_thread_meta(
 async def _stored_messages(thread_id: str) -> list[dict[str, Any]] | None:
     conn = await _meta_conn()
     cur = await conn.execute(
-        "SELECT role, content, created_at, stream_started_at, stream_elapsed_ms"
+        "SELECT role, content, created_at, stream_started_at, stream_elapsed_ms, attachments"
         " FROM thread_messages WHERE thread_id = ? ORDER BY id",
         (thread_id,),
     )
     rows = await cur.fetchall()
     if not rows:
         return None
-    return [
-        {
+    msgs: list[dict[str, Any]] = []
+    for role, content, created_at, stream_started_at, stream_elapsed_ms, attachments in rows:
+        try:
+            atts = json.loads(attachments) if attachments else []
+        except (ValueError, TypeError):
+            atts = []
+        msg = {
             "role": role,
             "content": content,
             "created_at": created_at,
             "stream_started_at": stream_started_at,
             "stream_elapsed_ms": stream_elapsed_ms,
         }
-        for role, content, created_at, stream_started_at, stream_elapsed_ms in rows
-    ]
+        if atts:
+            msg["attachments"] = atts
+        msgs.append(msg)
+    return msgs
 
 
 def _role_of(message: BaseMessage) -> str:
@@ -453,12 +497,14 @@ async def get_thread(thread_id: str, workspace_id: str | None = None) -> dict[st
             for m in raw
             if isinstance(m, BaseMessage)
         ]
+    attachments = await get_thread_attachments(thread_id)
     return {
         "thread_id": thread_id,
         "title": title,
         "archived": archived,
         "workspace_id": workspace_id,
         "chat_type": chat_type_from_meta or "workspace",
+        "attachments": attachments,
         "created_at": await _thread_created_at(saver, thread_id),
         "updated_at": _checkpoint_ts(
             (tup.config or {}).get("configurable", {}).get("checkpoint_id")

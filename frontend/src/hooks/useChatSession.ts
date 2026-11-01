@@ -13,6 +13,9 @@ export interface UseChatSessionOptions {
 export interface ChatSession {
   activeId: string | null
   setActiveId: (id: string | null) => void
+  attachments: { name: string; type: string; data: string }[]
+  addAttachment: (file: File) => void
+  removeAttachment: (index: number) => void
   chatType: 'normal' | 'workspace'
   setChatType: (value: 'normal' | 'workspace') => void
   messages: UiMessage[]
@@ -41,6 +44,7 @@ export function useChatSession({
   onRunsChanged,
 }: UseChatSessionOptions): ChatSession {
   const [activeId, setActiveId] = useState<string | null>(null)
+  const [attachments, setAttachments] = useState<{ name: string; type: string; data: string }[]>([])
   const [chatType, setChatType] = useState<'normal' | 'workspace'>('normal')
   const [messages, setMessages] = useState<UiMessage[]>([])
   const [input, setInput] = useState('')
@@ -231,9 +235,29 @@ export function useChatSession({
   const newChat = useCallback(() => {
     resetSession()
     setActiveId(null)
+    setAttachments([])
     setChatType('normal')
     onNavigateChat()
   }, [onNavigateChat, resetSession])
+
+  const addAttachment = useCallback((file: File) => {
+    if (file.size > 8 * 1024 * 1024) {
+      notify(`File too large: ${file.name} (max 8 MB)`, 'error')
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = () => {
+      setAttachments((prev) => [
+        ...prev,
+        { name: file.name, type: file.type, data: String(reader.result) },
+      ])
+    }
+    reader.readAsDataURL(file)
+  }, [])
+
+  const removeAttachment = useCallback((index: number) => {
+    setAttachments((prev) => prev.filter((_, i) => i !== index))
+  }, [])
 
   const selectThread = useCallback(
     async (threadId: string) => {
@@ -254,6 +278,12 @@ export function useChatSession({
               role: m.role,
               content: m.content,
               createdAt: m.created_at,
+              attachments:
+                m.attachments && m.attachments.length > 0
+                  ? m.attachments
+                  : /^\[Attached: (.+)\]$/m.exec(m.content)?.[1]
+                        ?.split(',')
+                        .map((n) => ({ name: n.trim() })),
               meta:
                 m.stream_elapsed_ms != null && m.stream_started_at
                   ? {
@@ -282,10 +312,18 @@ export function useChatSession({
     setError(null)
     setMessages((prev) => [
       ...prev,
-      { id: `u-${Date.now()}`, role: 'user', content: text, createdAt: now },
+      {
+        id: `u-${Date.now()}`,
+        role: 'user',
+        content: text,
+        createdAt: now,
+        attachments: attachments.map((a) => ({ name: a.name, mime: a.type })),
+      },
     ])
+    const atts = attachments
+    setAttachments([])
     await runStream(
-      (signal) => streamChat(text, activeId ?? undefined, chatType, signal),
+      (signal) => streamChat(text, activeId ?? undefined, chatType, atts, signal),
       activeId,
     )
   }, [activeId, chatType, hasPendingApproval, input, runStream, streaming])
@@ -293,6 +331,9 @@ export function useChatSession({
   return {
     activeId,
     setActiveId,
+    attachments,
+    addAttachment,
+    removeAttachment,
     chatType,
     setChatType,
     messages,

@@ -5,8 +5,10 @@ client only sends a new message plus an optional thread_id to continue a thread.
 """
 
 import asyncio
+import base64
 import json
 import os
+import re
 import time
 from contextlib import asynccontextmanager
 from uuid import uuid4
@@ -27,6 +29,7 @@ ALLOWED_ORIGINS = [
 
 from app.agent import (
     APP_VERSION,
+    BASE_DIR,
     DEFAULT_WORKSPACE_ID,
     GENERATION_IDLE_TIMEOUT,
     OLLAMA_MODEL,
@@ -39,6 +42,7 @@ from app.agent import (
     ensure_thread_meta,
     get_current,
     get_graph,
+    get_thread_attachments,
     get_thread,
     get_workspace,
     init_current,
@@ -47,6 +51,7 @@ from app.agent import (
     load_workspace_guidelines,
     record_message,
     record_runs,
+    record_thread_attachments,
     runs_summary,
     set_current,
     thread_exists,
@@ -101,6 +106,7 @@ class ChatRequest(BaseModel):
     message: str
     thread_id: str | None = None
     chat_type: str | None = None
+    attachments: list[dict] | None = None
 
 
 class ThreadUpdateRequest(BaseModel):
@@ -132,6 +138,59 @@ class WorkspaceUpdateRequest(BaseModel):
 
 
 _WINDOWS_DRIVES = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+_MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
+_TEXT_EXCERPT_LIMIT = 4000
+
+
+def _decode_attachment(data: str) -> tuple[str, bytes] | None:
+    if not isinstance(data, str) or not data.startswith("data:"):
+        return None
+    header, _, payload = data.partition(",")
+    if ";base64" not in header:
+        return None
+    mime = header[len("data:"):].split(";", 1)[0] or "application/octet-stream"
+    try:
+        raw = base64.b64decode(payload)
+    except Exception:
+        return None
+    return mime, raw
+
+
+def _safe_attachment_name(name: str) -> str:
+    name = re.sub(r"[^A-Za-z0-9._\-\ ]+", "_", os.path.basename(name or "")).strip()
+    return name or f"attachment_{uuid4().hex[:8]}"
+
+
+def _save_attachments(thread_id: str, attachments: list[dict]) -> list[dict]:
+    """Write thread attachments to disk; return their metadata."""
+    saved: list[dict] = []
+    if not attachments:
+        return saved
+    folder = os.path.join(BASE_DIR, "attachments", thread_id)
+    os.makedirs(folder, exist_ok=True)
+    for item in attachments[:10]:
+        decoded = _decode_attachment((item or {}).get("data") or "")
+        if decoded is None:
+            continue
+        mime, raw = decoded
+        if len(raw) > _MAX_ATTACHMENT_BYTES:
+            continue
+        name = _safe_attachment_name(
+            (item or {}).get("name") or f"file_{len(saved) + 1}"
+        )
+        target = os.path.join(folder, name)
+        with open(target, "wb") as f:
+            f.write(raw)
+        saved.append(
+            {
+                "name": name,
+                "path": target,
+                "mime": mime,
+                "size": len(raw),
+            }
+        )
+    return saved
 
 
 _runs = RunRegistry()
@@ -204,8 +263,40 @@ async def _event_generator(
             logger.info("chat start thread=%s message=%r", thread_id, req.message[:200])
             chat_type = req.chat_type if getattr(req, "chat_type", None) in ("normal", "workspace") else "workspace"
             await ensure_thread_meta(thread_id, req.message, ws_id, chat_type=chat_type)
-            await record_message(thread_id, "user", req.message, _now())
-            graph_input = {"messages": [HumanMessage(content=req.message)], "chat_type": chat_type}
+            try:
+                saved = _save_attachments(thread_id, req.attachments or [])
+            except Exception:
+                logger.exception("failed to save attachments thread=%s", thread_id)
+                saved = []
+            if saved:
+                await record_thread_attachments(thread_id, saved)
+            await record_message(
+                thread_id,
+                "user",
+                req.message,
+                _now(),
+                attachments=[
+                    {"name": m["name"], "mime": m["mime"], "path": m["path"]}
+                    for m in saved
+                ] or None,
+            )
+            user_content = req.message
+            if saved:
+                excerpts = []
+                for meta in saved:
+                    line = f"{meta['name']} ({meta['mime']}) at {meta['path']}"
+                    if meta["mime"].startswith("text/") or meta["mime"] in ("application/json", "text/markdown", "text/csv"):
+                        try:
+                            with open(meta["path"], "r", encoding="utf-8", errors="replace") as f:
+                                excerpt = f.read(_TEXT_EXCERPT_LIMIT)
+                            line += "\n" + excerpt
+                        except OSError:
+                            pass
+                    excerpts.append(line)
+                user_content = (
+                    req.message + ("\n\n" if req.message else "") + "\n\n".join(excerpts)
+                )
+            graph_input = {"messages": [HumanMessage(content=user_content)], "chat_type": chat_type}
             stream_started_at = _now()
         yield {"event": "start", "data": json.dumps({"thread_id": thread_id})}
 

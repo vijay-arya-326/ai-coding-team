@@ -27,6 +27,7 @@ SCHEMA: dict[str, list[str]] = {
         "updated_at TEXT NOT NULL",
         "workspace_id TEXT",
         "chat_type TEXT",
+        "attachments TEXT",
     ],
     "thread_messages": [
         "id INTEGER PRIMARY KEY AUTOINCREMENT",
@@ -36,6 +37,7 @@ SCHEMA: dict[str, list[str]] = {
         "created_at TEXT NOT NULL",
         "stream_started_at TEXT",
         "stream_elapsed_ms INTEGER",
+        "attachments TEXT",
     ],
     "thread_runs": [
         "id INTEGER PRIMARY KEY AUTOINCREMENT",
@@ -58,10 +60,12 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
     "thread_messages": [
         ("stream_started_at", "TEXT"),
         ("stream_elapsed_ms", "INTEGER"),
+        ("attachments", "TEXT"),
     ],
     "thread_meta": [
         ("workspace_id", "TEXT"),
         ("chat_type", "TEXT"),
+        ("attachments", "TEXT"),
     ],
     "thread_runs": [
         ("workspace_id", "TEXT"),

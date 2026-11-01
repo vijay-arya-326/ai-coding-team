@@ -13,9 +13,13 @@ export interface UiMessage {
   content: string
   createdAt: string | null
   meta?: BubbleMeta | null
+  attachments?: { name: string; mime?: string }[]
 }
 
 interface ChatViewProps {
+  attachments: { name: string; type: string; data: string }[]
+  onAttach: (file: File) => void
+  onRemoveAttachment: (index: number) => void
   messages: UiMessage[]
   streaming: boolean
   stream: string
@@ -33,6 +37,9 @@ interface ChatViewProps {
 }
 
 export default function ChatView({
+  attachments,
+  onAttach,
+  onRemoveAttachment,
   messages,
   streaming,
   stream,
@@ -52,6 +59,7 @@ export default function ChatView({
   const scrollRef = useRef<HTMLDivElement>(null)
   const atBottomRef = useRef(true)
   const [showRaw, setShowRaw] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const handleScroll = () => {
     const el = scrollRef.current
@@ -108,14 +116,24 @@ export default function ChatView({
         ) : (
           <>
             {messages.map((msg) => (
-              <MessageBubble
-                key={msg.id}
-                role={msg.role}
-                content={msg.content}
-                createdAt={msg.createdAt}
-                meta={msg.meta}
-                showRaw={showRaw}
-              />
+              <div key={msg.id} className={`flex w-full flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
+                <MessageBubble
+                  role={msg.role}
+                  content={msg.content}
+                  createdAt={msg.createdAt}
+                  meta={msg.meta}
+                  showRaw={showRaw}
+                />
+                {msg.attachments && msg.attachments.length > 0 && (
+                  <div className="mt-1 flex flex-col items-start gap-1">
+                    {msg.attachments.map((a, i) => (
+                      <span key={i} className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700 shadow-sm">
+                        {a.mime?.startsWith('image/') ? '🖼' : '📄'} {a.name}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
             ))}
             {streaming && (
               <MessageBubble
@@ -197,15 +215,55 @@ export default function ChatView({
       </div>
 
       <form
-        className="mx-auto flex w-full max-w-3xl gap-2.5 px-6 pb-6"
+        className="mx-auto flex w-full max-w-3xl flex-col gap-2 px-6 pb-6"
         onSubmit={(e) => {
           e.preventDefault()
           if (input.trim() && !streaming && !pendingApproval) send()
         }}
       >
+        {attachments.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {attachments.map((a, i) => (
+              <span key={i} className="flex items-center gap-1 rounded-md bg-slate-200 px-2 py-1 text-xs">
+                {a.type.startsWith('image/') ? '🖼' : '📄'} {a.name}
+                <button type="button" onClick={() => onRemoveAttachment(i)} className="ml-1 text-slate-500 hover:text-red-500">×</button>
+              </span>
+            ))}
+          </div>
+        )}
+        <div className="flex gap-2.5">
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          className="hidden"
+          onChange={(e) => {
+            Array.from(e.target.files || []).forEach(onAttach)
+            e.target.value = ''
+          }}
+        />
+        <button
+          type="button"
+          onClick={() => fileInputRef.current?.click()}
+          className="shrink-0 rounded-xl border border-slate-200 bg-white px-3 py-3 text-sm text-slate-600 hover:bg-slate-50"
+          title="Attach file"
+        >
+          📎
+        </button>
         <textarea
           value={input}
           onChange={(e) => onInputChange(e.target.value)}
+          onPaste={(e) => {
+            const items = e.clipboardData?.items
+            if (!items) return
+            for (const item of Array.from(items)) {
+              const file = item.getAsFile()
+              if (file) {
+                e.preventDefault()
+                onAttach(file)
+              }
+            }
+          }}
           onKeyDown={handleKeyDown}
           placeholder={
             pendingApproval
@@ -235,6 +293,7 @@ export default function ChatView({
             Send
           </button>
         )}
+        </div>
       </form>
     </section>
   )

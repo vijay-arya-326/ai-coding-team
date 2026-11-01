@@ -297,6 +297,9 @@ await deleteThread(threadId)
         </div>
       ) : (
         <ChatView
+          attachments={chat.attachments}
+          onAttach={chat.addAttachment}
+          onRemoveAttachment={chat.removeAttachment}
           messages={chat.messages}
           streaming={chat.streaming}
           stream={chat.streamText}

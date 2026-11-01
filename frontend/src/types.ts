@@ -4,6 +4,7 @@ export interface MessageDto {
   created_at: string | null
   stream_started_at?: string | null
   stream_elapsed_ms?: number | null
+  attachments?: { name: string; mime?: string; path?: string }[]
 }
 
 export interface ThreadSummary {
@@ -19,12 +20,20 @@ export interface ThreadSummary {
   first_user_message: string | null
 }
 
+export interface AttachmentMeta {
+  name: string
+  path?: string
+  mime?: string
+  size?: number
+}
+
 export interface ThreadDetail {
   thread_id: string
   title: string | null
   archived: boolean
   workspace_id: string | null
   chat_type: string | null
+  attachments: AttachmentMeta[]
   created_at: string | null
   updated_at: string | null
   messages: MessageDto[]
