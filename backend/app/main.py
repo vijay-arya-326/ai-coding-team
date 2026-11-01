@@ -454,7 +454,10 @@ async def _event_generator(
                 time.time() - started,
                 status,
             )
-            yield {"event": "end", "data": json.dumps({"status": status})}
+            yield {
+                "event": "end",
+                "data": json.dumps({"status": status, "content": final_text}),
+            }
     except Exception as exc:
         logger.exception("chat error thread=%s", thread_id)
         yield {"event": "error", "data": json.dumps({"detail": str(exc)})}

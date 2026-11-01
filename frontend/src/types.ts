@@ -58,7 +58,7 @@ export type StreamEvent =
       command?: string | null
       path?: string | null
     }
-  | { event: 'end' }
+  | { event: 'end'; content?: string }
   | { event: 'error'; detail: string }
 
 export interface ApprovalInfo {

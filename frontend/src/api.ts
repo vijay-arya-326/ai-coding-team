@@ -173,7 +173,7 @@ function parseEvent(raw: string): StreamEvent | null {
         output: (payload as { output: string }).output,
       }
     case 'end':
-      return { event: 'end' }
+      return { event: 'end', content: (payload as { content?: string }).content }
     case 'approval':
       return {
         event: 'approval',

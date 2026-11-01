@@ -152,6 +152,10 @@ export function useChatSession({
             case 'error':
               throw new Error(evt.detail)
             case 'end':
+              if (evt.content) {
+                acc = evt.content
+                setStreamText(acc)
+              }
               break
           }
         }
