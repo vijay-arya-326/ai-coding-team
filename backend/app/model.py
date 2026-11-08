@@ -64,7 +64,7 @@ def create_llm(model: str = OLLAMA_MODEL, bind_tools: bool = True) -> ChatOllama
         base_url=OLLAMA_BASE_URL,
         temperature=0.2,
         num_predict=1024,
-        num_ctx=4096,
+        num_ctx=16384,
     )
     if bind_tools and model_supports_tools():
         llm = llm.bind_tools(TOOLS)
@@ -173,7 +173,7 @@ def _responder_node(llm: ChatOllama) -> callable:
 
 def _build_graph(checkpointer: AsyncSqliteSaver):
     llm = create_llm()
-    responder_llm = create_llm(bind_tools=False)
+    responder_llm = create_llm()
     planner_llm = create_llm(PLANNER_MODEL, bind_tools=False)
     structured_planner = planner_llm.with_structured_output(ExecutionPlan)
 
@@ -189,7 +189,7 @@ def _build_graph(checkpointer: AsyncSqliteSaver):
         route_intent,
         {"responder": "responder", "agent": "agent"},
     )
-    graph.add_edge("responder", END)
+    graph.add_conditional_edges("responder", tools_condition)
     graph.add_conditional_edges("agent", tools_condition)
     graph.add_edge("tools", "agent")
     graph.add_edge("agent", END)

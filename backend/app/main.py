@@ -28,6 +28,7 @@ ALLOWED_ORIGINS = [
 ]
 
 from app.agent import (
+    set_last_user_message,
     APP_VERSION,
     BASE_DIR,
     DEFAULT_WORKSPACE_ID,
@@ -261,6 +262,7 @@ async def _event_generator(
             stream_started_at = _now()
         else:
             logger.info("chat start thread=%s message=%r", thread_id, req.message[:200])
+            set_last_user_message(req.message)
             chat_type = req.chat_type if getattr(req, "chat_type", None) in ("normal", "workspace") else "workspace"
             await ensure_thread_meta(thread_id, req.message, ws_id, chat_type=chat_type)
             try:

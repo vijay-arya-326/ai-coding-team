@@ -27,6 +27,12 @@ from .config import (  # noqa: F401
     GENERATION_IDLE_TIMEOUT,
     OLLAMA_BASE_URL,
     OLLAMA_MODEL,
+    OBSCURA_COMMAND,
+    OBSCURA_MAX_CHARS,
+    OBSCURA_TIMEOUT,
+    SEARXNG_MAX_RESULTS,
+    SEARXNG_TIMEOUT,
+    SEARXNG_URL,
     PLANNER_MODEL,
     PLANNER_PROMPT,
     PLANNER_TIMEOUT,
@@ -90,6 +96,9 @@ from .tools import (  # noqa: F401
     rename_file,
     run_shell_command,
     search_code,
+    search_web,
+    fetch_rendered_page,
+    set_last_user_message,
 )
 from .workspace import (  # noqa: F401
     DEFAULT_WORKSPACE_ID,
