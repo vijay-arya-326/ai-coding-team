@@ -27,6 +27,7 @@ and it is also kept in memory for synchronous tool calls.
 import json
 import logging
 import os
+import shutil
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -375,6 +376,14 @@ async def delete_workspace(ws_id: str) -> bool:
             logger.exception("failed to delete checkpoint thread=%s", tid)
     await conn.execute("DELETE FROM workspaces WHERE id = ?", (ws_id,))
     await conn.commit()
+    # Remove the app-owned .local_agent_workspace folder from disk. User files
+    # in the workspace root are left untouched.
+    cfg_dir = workspace_dir(ws.root_path)
+    try:
+        if os.path.isdir(cfg_dir):
+            shutil.rmtree(cfg_dir)
+    except OSError:
+        logger.exception("failed to remove workspace folder root=%s", ws.root_path)
     if (await _get_setting("active_workspace_id")) == ws_id:
         await activate_workspace(DEFAULT_WORKSPACE_ID)
     logger.info("workspace deleted id=%s threads=%d", ws_id, len(thread_ids))
