@@ -38,6 +38,10 @@ export default function App() {
     selectedWorkspaceId !== null
       ? (workspaces.find((w) => w.id === selectedWorkspaceId) ?? null)
       : null
+  const runsWorkspaceId =
+    selectedWorkspaceId ??
+    workspaces.find((w) => w.active)?.id ??
+    'default'
 
   const { toasts, notify, dismiss } = useToasts()
 
@@ -105,10 +109,10 @@ const refreshRuns = useCallback(async (reset = false, workspaceId?: string | nul
 const handleViewChange = useCallback(
     (v: 'chat' | 'runs' | 'workspaces') => {
       setView(v)
-      if (v === 'runs') void refreshRuns(true, selectedWorkspaceId ?? 'default')
+      if (v === 'runs') void refreshRuns(true, runsWorkspaceId)
       if (v === 'workspaces') void refreshWorkspaces()
     },
-    [refreshRuns, refreshWorkspaces],
+    [refreshRuns, refreshWorkspaces, runsWorkspaceId],
   )
 
   const handleActivateWorkspace = useCallback(
@@ -130,7 +134,7 @@ const handleViewChange = useCallback(
         await activateWorkspace(workspaceId)
         await refreshWorkspaces()
         await refreshThreads()
-        await refreshRuns(true)
+        await refreshRuns(true, workspaceId)
         newChat()
         if (previousView === 'runs') setView('runs')
         notify('Workspace activated')

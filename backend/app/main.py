@@ -571,7 +571,7 @@ async def runs_list(workspace_id: str | None = None) -> list[dict]:
 
 @app.get("/runs/{thread_id}")
 async def runs_detail(thread_id: str) -> dict:
-    result = await thread_runs(thread_id, workspace_id=get_current().id)
+    result = await thread_runs(thread_id)
     if result is None:
         logger.info("runs not found id=%s", thread_id)
         raise HTTPException(status_code=404, detail="No runs for thread")
