@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sse_starlette.sse import EventSourceResponse
 
 ALLOWED_ORIGINS = [
@@ -42,6 +42,7 @@ from app.agent import (
     delete_workspace,
     ensure_thread_meta,
     get_current,
+    get_background_activity,
     get_graph,
     get_thread_attachments,
     get_thread,
@@ -59,6 +60,7 @@ from app.agent import (
     thread_runs,
     thread_workspace_id,
     update_thread_meta,
+    update_background_activity,
     update_workspace,
     _now,
 )
@@ -138,10 +140,31 @@ class WorkspaceUpdateRequest(BaseModel):
     guidelines: str | None = None
 
 
+class ActivityUpdateRequest(BaseModel):
+    detail: str | None = Field(default=None, max_length=240)
+    completed: bool | None = None
+    updated_by: str | None = Field(default=None, max_length=80)
+
+    @model_validator(mode="after")
+    def validate_change(self):
+        if self.detail is not None:
+            self.detail = self.detail.strip()
+        if self.updated_by is not None:
+            self.updated_by = self.updated_by.strip() or None
+        if not self.detail and self.completed is None:
+            raise ValueError("Provide a background activity detail or completion status")
+        return self
+
+
 _WINDOWS_DRIVES = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 _MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
 _TEXT_EXCERPT_LIMIT = 4000
+
+
+def _is_user_facing_model_event(event: dict) -> bool:
+    metadata = event.get("metadata") or {}
+    return metadata.get("langgraph_node") in {"agent", "responder"}
 
 
 def _decode_attachment(data: str) -> tuple[str, bytes] | None:
@@ -324,9 +347,9 @@ async def _event_generator(
                     break
                 kind = event["event"]
                 data = event.get("data", {}) or {}
-                if kind == "on_chat_model_start":
+                if kind == "on_chat_model_start" and _is_user_facing_model_event(event):
                     tracker.start_run()
-                elif kind == "on_chat_model_stream":
+                elif kind == "on_chat_model_stream" and _is_user_facing_model_event(event):
                     chunk = data.get("chunk")
                     text = chunk.content if chunk else ""
                     if text:
@@ -340,7 +363,7 @@ async def _event_generator(
                                 "event": "token",
                                 "data": json.dumps({"delta": text}),
                             }
-                elif kind == "on_chat_model_end":
+                elif kind == "on_chat_model_end" and _is_user_facing_model_event(event):
                     usage = None
                     out = data.get("output")
                     if isinstance(out, list):
@@ -538,6 +561,10 @@ async def resume_thread(thread_id: str, req: ResumeRequest) -> EventSourceRespon
         raise HTTPException(
             status_code=409, detail="No pending approval for this approval_id"
         )
+    if not _runs.claim(thread_id):
+        raise HTTPException(
+            status_code=409, detail="A response is already in progress for this thread"
+        )
     logger.info(
         "resume request thread=%s id=%s approved=%s",
         thread_id,
@@ -577,6 +604,21 @@ async def runs_detail(thread_id: str) -> dict:
         raise HTTPException(status_code=404, detail="No runs for thread")
     logger.info("runs fetched id=%s runs=%d", thread_id, result["run_count"])
     return result
+
+
+@app.get("/background-activity")
+async def background_activity() -> dict:
+    return await get_background_activity(get_current().id)
+
+
+@app.patch("/background-activity")
+async def background_activity_update(update: ActivityUpdateRequest) -> dict:
+    return await update_background_activity(
+        get_current().id,
+        detail=update.detail,
+        completed=update.completed,
+        updated_by=update.updated_by,
+    )
 
 
 @app.get("/threads/{thread_id}")

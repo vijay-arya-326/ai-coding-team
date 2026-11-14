@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import MessageBubble, { type BubbleMeta } from './MessageBubble'
 import type { ApprovalDecision, ApprovalInfo } from '../types'
 
@@ -59,6 +61,7 @@ export default function ChatView({
   const scrollRef = useRef<HTMLDivElement>(null)
   const atBottomRef = useRef(true)
   const [showRaw, setShowRaw] = useState(false)
+  const [webSearchCountdown, setWebSearchCountdown] = useState<number | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const handleScroll = () => {
@@ -74,6 +77,25 @@ export default function ChatView({
   }, [messages.length, stream, streamElapsedMs, toolActivity.length, streaming])
 
   const pendingApproval = approvals.some((a) => !approvalDecisions[a.approval_id])
+  const webSearchApproval = approvals.find(
+    (a) => a.kind === 'web_search' && !approvalDecisions[a.approval_id],
+  )
+
+  useEffect(() => {
+    if (!webSearchApproval) return
+    setWebSearchCountdown(60)
+    const timer = window.setInterval(() => {
+      setWebSearchCountdown((seconds) => {
+        if (seconds === null || seconds <= 1) {
+          window.clearInterval(timer)
+          onDecideApproval(webSearchApproval.approval_id, true)
+          return 0
+        }
+        return seconds - 1
+      })
+    }, 1_000)
+    return () => window.clearInterval(timer)
+  }, [onDecideApproval, webSearchApproval])
 
   const send = () => {
     atBottomRef.current = true
@@ -154,17 +176,30 @@ export default function ChatView({
         )}
 
         {toolActivity.length > 0 && (
-          <div className="flex flex-wrap gap-1.5 self-start">
+          <div className="flex max-w-3xl flex-col gap-1.5 self-start">
             {toolActivity.map((tool, i) => (
-              <span
+              <div
                 key={i}
-                className="rounded-full border border-slate-200 bg-slate-100 px-2.5 py-1 text-xs text-slate-600"
+                className="rounded-lg border border-slate-200 bg-slate-100 px-2.5 py-1.5 text-xs text-slate-600"
               >
                 ⚙ {tool.name}
                 {tool.output !== undefined && (
-                  <em className="text-emerald-700 not-italic"> → {tool.output}</em>
+                  <div className="markdown mt-1 text-emerald-700">
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                      components={{
+                        a: ({ href, children }) => (
+                          <a href={href} target="_blank" rel="noopener noreferrer">
+                            {children}
+                          </a>
+                        ),
+                      }}
+                    >
+                      {tool.output}
+                    </ReactMarkdown>
+                  </div>
                 )}
-              </span>
+              </div>
             ))}
           </div>
         )}
@@ -180,6 +215,11 @@ export default function ChatView({
                 <span aria-hidden="true">⚠</span> Action requires approval
               </div>
               <p className="mt-1 text-[13px] leading-snug text-amber-900">{a.description}</p>
+              {a.kind === 'web_search' && (
+                <p className="mt-1 text-xs font-medium text-amber-700">
+                  Auto-approves in {webSearchCountdown ?? 60} sec
+                </p>
+              )}
               {a.command && (
                 <code className="mt-1.5 block rounded-md bg-white/70 px-2 py-1 text-[12px] break-all font-mono text-slate-700">
                   {a.command}
@@ -191,7 +231,7 @@ export default function ChatView({
                   onClick={() => onDecideApproval(a.approval_id, true)}
                   className="cursor-pointer rounded-lg bg-emerald-600 px-3.5 py-1.5 text-[13px] font-semibold text-white transition-colors hover:bg-emerald-700"
                 >
-                  Approve
+                  {a.kind === 'web_search' ? `Approve (${webSearchCountdown ?? 60}s)` : 'Approve'}
                 </button>
                 <button
                   type="button"

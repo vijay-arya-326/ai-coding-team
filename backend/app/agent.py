@@ -67,6 +67,7 @@ from .persistence import (  # noqa: F401
     list_threads,
     open_checkpointer,
     get_thread_attachments,
+    get_background_activity,
     record_message,
     record_runs,
     record_thread_attachments,
@@ -75,6 +76,7 @@ from .persistence import (  # noqa: F401
     thread_runs,
     thread_workspace_id,
     update_thread_meta,
+    update_background_activity,
 )
 from .shell import (  # noqa: F401
     SAFE_COMMANDS,

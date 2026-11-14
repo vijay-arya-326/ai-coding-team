@@ -5,12 +5,15 @@ import {
   createWorkspace,
   deleteThread,
   deleteWorkspace,
+  fetchBackgroundActivity,
   fetchRunsSummary,
   fetchThreads,
   fetchWorkspaces,
   updateThread,
+  updateBackgroundActivity,
   updateWorkspace,
 } from './api'
+import BackgroundActivity from './components/BackgroundActivity'
 import ChatView from './components/ChatView'
 import ConfirmDialog from './components/ConfirmDialog'
 import RenameDialog from './components/RenameDialog'
@@ -20,7 +23,7 @@ import Toasts from './components/Toasts'
 import WorkspacesView from './components/WorkspacesView'
 import { useChatSession } from './hooks/useChatSession'
 import { useToasts } from './hooks/useToasts'
-import type { RunSummary, ThreadSummary, Workspace, WorkspaceConfig } from './types'
+import type { BackgroundActivity as BackgroundActivityItem, RunSummary, ThreadSummary, Workspace, WorkspaceConfig } from './types'
 
 export default function App() {
   const [view, setView] = useState<'chat' | 'runs' | 'workspaces'>('chat')
@@ -33,6 +36,8 @@ export default function App() {
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null)
+  const [backgroundActivity, setBackgroundActivity] = useState<BackgroundActivityItem | null>(null)
+  const [backgroundActivityLoading, setBackgroundActivityLoading] = useState(true)
 
   const selectedWorkspace =
     selectedWorkspaceId !== null
@@ -62,10 +67,22 @@ export default function App() {
     }
   }, [])
 
+  const refreshBackgroundActivity = useCallback(async () => {
+    setBackgroundActivityLoading(true)
+    try {
+      setBackgroundActivity(await fetchBackgroundActivity())
+    } catch {
+      setBackgroundActivity(null)
+    } finally {
+      setBackgroundActivityLoading(false)
+    }
+  }, [])
+
   useEffect(() => {
     void refreshThreads()
     void refreshWorkspaces()
-  }, [refreshThreads, refreshWorkspaces])
+    void refreshBackgroundActivity()
+  }, [refreshThreads, refreshWorkspaces, refreshBackgroundActivity])
 
 const chat = useChatSession({
     notify,
@@ -123,6 +140,7 @@ const handleViewChange = useCallback(
         setSelectedWorkspaceId(null)
         newChat()
         void refreshRuns(true, 'default')
+        void refreshBackgroundActivity()
         if (previousView === 'runs') setView('runs')
         notify('General Chat selected')
         return
@@ -135,6 +153,7 @@ const handleViewChange = useCallback(
         await refreshWorkspaces()
         await refreshThreads()
         await refreshRuns(true, workspaceId)
+        await refreshBackgroundActivity()
         newChat()
         if (previousView === 'runs') setView('runs')
         notify('Workspace activated')
@@ -143,7 +162,7 @@ const handleViewChange = useCallback(
         notify('Failed to activate workspace', 'error')
       }
     },
-    [activeId, view, workspaces, refreshWorkspaces, refreshThreads, refreshRuns, newChat, notify, reportError],
+    [activeId, view, workspaces, refreshWorkspaces, refreshThreads, refreshRuns, refreshBackgroundActivity, newChat, notify, reportError],
   )
 
   const handleCreateWorkspace = useCallback(
@@ -258,6 +277,17 @@ await deleteThread(threadId)
     [notify, refreshThreads, threads, reportError],
   )
 
+  const handleBackgroundActivityUpdate = useCallback(
+    async (update: Partial<Pick<BackgroundActivityItem, 'detail' | 'completed'>>) => {
+      try {
+        setBackgroundActivity(await updateBackgroundActivity(update))
+      } catch (err) {
+        notify(err instanceof Error ? err.message : 'Failed to update background activity', 'error')
+      }
+    },
+    [notify],
+  )
+
   return (
     <div className="flex h-screen">
       <Toasts toasts={toasts} onDismiss={dismiss} />
@@ -320,6 +350,11 @@ await deleteThread(threadId)
           onDecideApproval={(id, approved, allow) => void chat.handleApproval(id, approved, allow)}
         />
       )}
+      <BackgroundActivity
+        activity={backgroundActivity}
+        loading={backgroundActivityLoading}
+        onUpdate={(update) => void handleBackgroundActivityUpdate(update)}
+      />
       <ConfirmDialog
         open={pendingDelete !== null}
         title="Delete conversation?"

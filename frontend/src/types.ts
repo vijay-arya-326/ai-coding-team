@@ -155,3 +155,10 @@ export interface ThreadRuns {
   totals: RunTotals
   runs: RunRound[]
 }
+
+export interface BackgroundActivity {
+  detail: string
+  completed: boolean
+  updated_by: string | null
+  updated_at: string | null
+}

@@ -17,6 +17,12 @@ class RunRegistry:
     def stop_event(self, thread_id: str) -> asyncio.Event:
         return self._active.setdefault(thread_id, asyncio.Event())
 
+    def claim(self, thread_id: str) -> bool:
+        if thread_id in self._active:
+            return False
+        self._active[thread_id] = asyncio.Event()
+        return True
+
     def is_active(self, thread_id: str) -> bool:
         return thread_id in self._active
 

@@ -53,6 +53,13 @@ SCHEMA: dict[str, list[str]] = {
         "tools_json TEXT",
         "workspace_id TEXT",
     ],
+    "background_activity": [
+        "workspace_id TEXT PRIMARY KEY",
+        "detail TEXT NOT NULL",
+        "completed INTEGER NOT NULL DEFAULT 0",
+        "updated_by TEXT",
+        "updated_at TEXT NOT NULL",
+    ],
 }
 
 # Columns appended to existing tables when the app is upgraded.

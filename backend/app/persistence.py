@@ -41,6 +41,39 @@ async def record_thread_attachments(thread_id: str, attachments: list[dict[str, 
     await conn.commit()
 
 
+async def get_background_activity(workspace_id: str) -> dict[str, Any]:
+    conn = await _meta_conn()
+    cur = await conn.execute(
+        "SELECT detail, completed, updated_by, updated_at FROM background_activity WHERE workspace_id = ?",
+        (workspace_id,),
+    )
+    row = await cur.fetchone()
+    if row is None:
+        return {"detail": "Background activity", "completed": False, "updated_by": None, "updated_at": None}
+    return {"detail": row[0], "completed": bool(row[1]), "updated_by": row[2], "updated_at": row[3]}
+
+
+async def update_background_activity(
+    workspace_id: str,
+    detail: str | None = None,
+    completed: bool | None = None,
+    updated_by: str | None = None,
+) -> dict[str, Any]:
+    current = await get_background_activity(workspace_id)
+    next_detail = detail if detail is not None else current["detail"]
+    next_completed = completed if completed is not None else current["completed"]
+    next_updated_by = updated_by if updated_by is not None else current["updated_by"]
+    now = _now()
+    conn = await _meta_conn()
+    await conn.execute(
+        "INSERT INTO background_activity (workspace_id, detail, completed, updated_by, updated_at) VALUES (?, ?, ?, ?, ?)"
+        " ON CONFLICT(workspace_id) DO UPDATE SET detail = excluded.detail, completed = excluded.completed, updated_by = excluded.updated_by, updated_at = excluded.updated_at",
+        (workspace_id, next_detail, int(next_completed), next_updated_by, now),
+    )
+    await conn.commit()
+    return {"detail": next_detail, "completed": next_completed, "updated_by": next_updated_by, "updated_at": now}
+
+
 async def get_thread_attachments(thread_id: str) -> list[dict[str, Any]]:
     """Return a thread's saved attachment metadata (empty when none)."""
     conn = await _meta_conn()

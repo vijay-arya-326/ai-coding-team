@@ -151,3 +151,14 @@ def test_build_graph_compiles_with_planner_and_responder(monkeypatch):
     graph = _build_graph(checkpointer=None)
     nodes = set(graph.get_graph().nodes)
     assert {"planner", "responder", "agent", "tools"} <= nodes
+
+
+def test_question_responder_can_call_tools(monkeypatch):
+    monkeypatch.setenv("DISABLE_TOOLS", "1")
+    from app.model import _build_graph
+
+    graph = _build_graph(checkpointer=None).get_graph()
+    assert any(
+        edge.source == "responder" and edge.target == "tools" and edge.conditional
+        for edge in graph.edges
+    )

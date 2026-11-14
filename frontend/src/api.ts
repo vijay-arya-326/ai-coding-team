@@ -1,4 +1,5 @@
 import type {
+  BackgroundActivity,
   BrowseResult,
   FolderEntry,
   RunSummary,
@@ -35,6 +36,20 @@ export function fetchThreads(all = false): Promise<ThreadSummary[]> {
 export function fetchRunsSummary(workspaceId?: string | null): Promise<RunSummary[]> {
   const q = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : ''
   return jsonFetch<RunSummary[]>(`${BASE}/runs${q}`)
+}
+
+export function fetchBackgroundActivity(): Promise<BackgroundActivity> {
+  return jsonFetch<BackgroundActivity>(`${BASE}/background-activity`)
+}
+
+export function updateBackgroundActivity(
+  update: Partial<Pick<BackgroundActivity, 'detail' | 'completed' | 'updated_by'>>,
+): Promise<BackgroundActivity> {
+  return jsonFetch<BackgroundActivity>(`${BASE}/background-activity`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(update),
+  })
 }
 
 export function fetchThreadRuns(threadId: string): Promise<ThreadRuns> {

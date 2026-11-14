@@ -60,6 +60,7 @@ export function useChatSession({
   const abortRef = useRef<AbortController | null>(null)
   const stoppedRef = useRef(false)
   const streamThreadIdRef = useRef<string | null>(null)
+  const approvalInFlightRef = useRef(new Set<string>())
 
   useEffect(() => {
     if (streamStartedAt === null) return
@@ -80,6 +81,7 @@ export function useChatSession({
     setStreamElapsedMs(0)
     setApprovals([])
     setApprovalDecisions({})
+    approvalInFlightRef.current.clear()
   }, [])
 
   const reportError = useCallback((message: string) => {
@@ -101,6 +103,7 @@ export function useChatSession({
       abortRef.current = controller
       let currentId = threadId
       let acc = ''
+      const completedTools: ToolActivity[] = []
       let startedAt = 0
       let failed = false
       stoppedRef.current = false
@@ -128,9 +131,16 @@ export function useChatSession({
               setStreamText(acc)
               break
             case 'tool_start':
+              completedTools.push({ name: evt.tool })
               setToolActivity((prev) => [...prev, { name: evt.tool }])
               break
             case 'tool_end':
+              for (let index = completedTools.length - 1; index >= 0; index -= 1) {
+                if (completedTools[index].name === evt.tool && completedTools[index].output === undefined) {
+                  completedTools[index] = { ...completedTools[index], output: evt.output }
+                  break
+                }
+              }
               setToolActivity((prev) =>
                 prev.map((t, i) =>
                   i === prev.length - 1 && t.name === evt.tool ? { ...t, output: evt.output } : t,
@@ -161,12 +171,16 @@ export function useChatSession({
         }
 
         const elapsedMs = startedAt ? Date.now() - startedAt : 0
+        const webResearch = completedTools
+          .filter((tool) => tool.name === 'search_web' && tool.output)
+          .map((tool) => tool.output)
+          .join('\n\n')
         setMessages((prev) => [
           ...prev,
           {
             id: `a-${Date.now()}`,
             role: 'assistant',
-            content: acc || '…',
+            content: `${acc || '…'}${webResearch ? `\n\n### Sources\n${webResearch}` : ''}`,
             createdAt: new Date().toISOString(),
             meta: { startedAt, elapsedMs },
           },
@@ -214,7 +228,8 @@ export function useChatSession({
   const handleApproval = useCallback(
     async (approvalId: string, approved: boolean, allow?: 'always') => {
       const threadId = streamThreadIdRef.current ?? activeId
-      if (!threadId || streaming) return
+      if (!threadId || streaming || approvalInFlightRef.current.has(approvalId)) return
+      approvalInFlightRef.current.add(approvalId)
       setApprovalDecisions((prev) => ({ ...prev, [approvalId]: { approved, allow } }))
       const ok = await runStream(
         (signal) => resumeChat(threadId, approvalId, approved, allow, signal),
@@ -225,6 +240,7 @@ export function useChatSession({
         else if (allow === 'always') notify('Approved; command added to the allowlist', 'success')
         else notify('Action approved and executed', 'success')
       } else {
+        approvalInFlightRef.current.delete(approvalId)
         setApprovalDecisions((prev) => {
           const next = { ...prev }
           delete next[approvalId]

@@ -83,16 +83,22 @@ curl -N -X POST http://127.0.0.1:8000/chat \
 
 Environment variables (defaults shown):
 
-| variable           | default              |
-| ------------------ | -------------------- |
-| `OLLAMA_MODEL`     | `phi3`               |
-| `OLLAMA_BASE_URL`  | `http://localhost:11434` |
+| variable           | default                     |
+| ------------------ |-----------------------------|
+| `OLLAMA_MODEL`     | `phi3`                      |
+| `OLLAMA_BASE_URL`  | `http://localhost:11434`    |
+| `SEARXNG_URL`      | `http://localhost:8080`     |
+| `SEARXNG_TIMEOUT`  | `30` seconds                |
+| `SEARXNG_MAX_RESULTS` | `10`                        |
+| `OBSCURA_COMMAND` | `obscura`                   |
+| `OBSCURA_TIMEOUT` | `30` seconds                |
+| `OBSCURA_MAX_CHARS` | `12000`                     |
 | `THREADS_DB_PATH`  | `backend/db/agent_state.db` |
-| `LOGS_DIR`         | `backend/logs`        |
-| `LOG_FILE`         | `<LOGS_DIR>/app.log`   |
-| `LOG_LEVEL`        | `INFO`                |
-| `FORCE_TOOLS`      | unset                |
-| `DISABLE_TOOLS`    | unset                |
+| `LOGS_DIR`         | `backend/logs`              |
+| `LOG_FILE`         | `<LOGS_DIR>/app.log`        |
+| `LOG_LEVEL`        | `INFO`                      |
+| `FORCE_TOOLS`      | unset                       |
+| `DISABLE_TOOLS`    | unset                       |
 
 ## Logging
 
